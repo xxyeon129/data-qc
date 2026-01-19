@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 import pandas as pd
 import io
 from datetime import datetime
-from app.models.schemas import Project, ProjectCreate
+from app.models.schemas import Project, ProjectCreate, ProjectNameUpdate
 from app.models.base import Project as ProjectModel
 from app.db.session import get_db
 
@@ -97,6 +97,24 @@ async def update_project(project_id: int, project: ProjectCreate, db: Session = 
     db_project.sample_accuracy = project.sample_accuracy
     db_project.updated_at = datetime.utcnow()
 
+    db.commit()
+    db.refresh(db_project)
+    return project_to_dict(db_project)
+
+
+@router.patch("/{project_id}/name", response_model=Project)
+async def update_project_name(project_id: int, name_update: ProjectNameUpdate, db: Session = Depends(get_db)):
+    """프로젝트 이름만 수정"""
+    db_project = db.query(ProjectModel).filter(ProjectModel.id == project_id).first()
+    if not db_project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    if not name_update.name.strip():
+        raise HTTPException(status_code=400, detail="프로젝트 이름은 비어있을 수 없습니다.")
+    
+    db_project.name = name_update.name.strip()
+    db_project.updated_at = datetime.utcnow()
+    
     db.commit()
     db.refresh(db_project)
     return project_to_dict(db_project)

@@ -2,6 +2,7 @@ import { useState, useEffect, forwardRef, useImperativeHandle } from "react";
 import * as S from "./projectManage.styles";
 import { ProjectCard } from "./ProjectCard";
 import { ProjectModal } from "./ProjectModal";
+import { FileUploadModal } from "./FileUploadModal";
 import { apiClient } from "@/shared/api";
 
 interface Project {
@@ -30,6 +31,8 @@ interface ProjectManageProps {
 
 export const ProjectManage = forwardRef<ProjectManageRef, ProjectManageProps>((props, ref) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isFileUploadModalOpen, setIsFileUploadModalOpen] = useState(false);
+  const [selectedProjectForUpload, setSelectedProjectForUpload] = useState<Project | null>(null);
   const [selectedProject, setSelectedProject] = useState<number | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
@@ -130,14 +133,32 @@ export const ProjectManage = forwardRef<ProjectManageRef, ProjectManageProps>((p
               key={project.id}
               project={project}
               selected={selectedProject === project.id}
-              onClick={() => setSelectedProject(project.id)}
+              onClick={() => {
+                setSelectedProject(project.id);
+                setSelectedProjectForUpload(project);
+                setIsFileUploadModalOpen(true);
+              }}
               onDelete={handleProjectDelete}
+              onNameUpdated={handleProjectCreated}
             />
           ))}
         </S.ProjectGrid>
       </S.Card>
 
       {isModalOpen && <ProjectModal onClose={() => setIsModalOpen(false)} onProjectCreated={handleProjectCreated} />}
+      {isFileUploadModalOpen && selectedProjectForUpload && (
+        <FileUploadModal
+          projectId={selectedProjectForUpload.id}
+          projectName={selectedProjectForUpload.name}
+          onClose={() => {
+            setIsFileUploadModalOpen(false);
+            setSelectedProjectForUpload(null);
+          }}
+          onFileUploaded={() => {
+            handleProjectCreated();
+          }}
+        />
+      )}
     </>
   );
 });

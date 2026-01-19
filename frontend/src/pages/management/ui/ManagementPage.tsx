@@ -44,7 +44,7 @@ export const ManagementPage = () => {
         </S.Alert>
 
         <S.ImputationContainer>
-          <DataAnalysis />
+          {/* <DataAnalysis /> */}
           <ImputationStrategy
             onImputationComplete={setImputationResult}
             onExecutionStart={() => setIsExecuting(true)}

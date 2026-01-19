@@ -97,6 +97,7 @@ export const MethodDescription = styled.div<{ $color: string }>`
   border-radius: 8px;
   margin-top: 12px;
   border-left: 3px solid ${({ $color }) => $color};
+  margin-bottom: 16px;
 `;
 
 export const MethodTitle = styled.div`
@@ -152,6 +153,7 @@ export const SliderFill = styled.div<{ $width: number }>`
   background: linear-gradient(135deg, #667eea, #764ba2);
   border-radius: 4px;
   transition: width 0.2s;
+  pointer-events: none;
 `;
 
 export const SliderThumb = styled.div<{ $left: number }>`
@@ -166,6 +168,25 @@ export const SliderThumb = styled.div<{ $left: number }>`
   border-radius: 50%;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
   cursor: grab;
+  z-index: 2;
+  pointer-events: none;
+`;
+
+export const HiddenRangeInput = styled.input`
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 100%;
+  height: 28px;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+  z-index: 3;
+
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
 `;
 
 export const SliderHelp = styled.div`

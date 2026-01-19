@@ -89,6 +89,13 @@ class ApiClient {
     });
   }
 
+  async updateProjectName(id: number, name: string) {
+    return this.request(`/projects/${id}/name`, {
+      method: "PATCH",
+      data: { name },
+    });
+  }
+
   async deleteProject(id: number) {
     return this.request(`/projects/${id}`, {
       method: "DELETE",
@@ -96,9 +103,16 @@ class ApiClient {
   }
 
   // Data API
-  async getDataFiles(projectId?: number) {
+  async getDataFiles(projectId?: number, pendingOnly?: boolean) {
+    const params: Record<string, string | number> = {};
+    if (projectId) {
+      params.project_id = projectId;
+    }
+    if (pendingOnly) {
+      params.pending_only = "true";
+    }
     return this.request("/data", {
-      params: projectId ? { project_id: projectId } : undefined,
+      params: Object.keys(params).length > 0 ? params : undefined,
     });
   }
 
@@ -113,6 +127,12 @@ class ApiClient {
     return this.request(url, {
       method: "POST",
       data: formData,
+    });
+  }
+
+  async assignFileToProject(fileId: number, projectId: number) {
+    return this.request(`/data/${fileId}/assign?project_id=${projectId}`, {
+      method: "PATCH",
     });
   }
 

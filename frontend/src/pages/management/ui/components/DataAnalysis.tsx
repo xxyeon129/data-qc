@@ -153,13 +153,13 @@ export const DataAnalysis = () => {
   };
 
   return (
-    <S.SettingCard>
+    <>
       <S.SettingHeader>
         <S.SettingIcon>📊</S.SettingIcon>
         <S.SettingTitle>데이터 현황 분석</S.SettingTitle>
       </S.SettingHeader>
 
-      <S.FormGroup>
+      {/* <S.FormGroup>
         <S.FormLabel>프로젝트 선택</S.FormLabel>
         <S.FormSelect
           value={selectedProjectId || ""}
@@ -180,7 +180,7 @@ export const DataAnalysis = () => {
         <div style={{ padding: "1rem", textAlign: "center", color: "#666" }}>
           검증 데이터 로딩 중...
         </div>
-      )}
+      )} */}
 
       <S.StatusContainer>
         <S.StatusTitle>오믹스별 결측 현황</S.StatusTitle>
@@ -228,7 +228,7 @@ export const DataAnalysis = () => {
           </S.SummaryItem>
         </S.Summary>
       </S.StatusContainer>
-    </S.SettingCard>
+    </>
   );
 };
 

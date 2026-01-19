@@ -1,6 +1,6 @@
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
-pydantic==2.9.2
+pydantic>=2.9.2
 pydantic-settings==2.5.2
 python-multipart==0.0.9
 # Python 3.14 호환을 위해 최신 버전 사용 (미리 컴파일된 wheel 사용)
@@ -15,7 +15,7 @@ passlib[bcrypt]==1.7.4
 python-dotenv==1.0.1
 
 # ML/AI libraries for future imputation models
-# torch==2.2.0  # Uncomment when needed for deep learning models
+torch>=2.2.0  # Required for multiomics imputation service
 # tensorflow==2.16.1  # Uncomment when needed
 # xgboost==2.1.0  # Uncomment when needed
 

@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import * as S from "./imputationStrategy.styles";
 import { apiClient } from "@/shared/api";
+import { DataAnalysis } from "./DataAnalysis";
 
 interface ImputationMethod {
   value: string;
@@ -14,7 +15,7 @@ interface Project {
 }
 
 const defaultMethods: ImputationMethod[] = [
-  { value: "mochi", label: "🚀 MOCHI: Imputation Model (추천)" },
+  { value: "mochi", label: "🚀 MOCHI: Imputation Model" },
   { value: "mean", label: "Mean/Median Imputation" },
   { value: "knn", label: "KNN Imputation" },
   // { value: "mice", label: "MICE (Multiple Imputation)" }, // TODO: 대용량 데이터 최적화 필요
@@ -137,7 +138,7 @@ export const ImputationStrategy: React.FC<ImputationStrategyProps> = ({
       setError(null);
       onExecutionStart?.();
 
-      let result: any;
+      let result: unknown;
 
       // 선택된 보간 방법에 따라 다른 API 호출
       if (selectedMethod === "mochi") {
@@ -208,10 +209,6 @@ export const ImputationStrategy: React.FC<ImputationStrategyProps> = ({
 
   return (
     <S.SettingCard>
-      <S.SettingHeader>
-        <S.SettingIcon>🎯</S.SettingIcon>
-        <S.SettingTitle>보간 전략 설정</S.SettingTitle>
-      </S.SettingHeader>
 
       <S.FormGroup>
         <S.FormLabel>프로젝트 선택</S.FormLabel>
@@ -219,7 +216,7 @@ export const ImputationStrategy: React.FC<ImputationStrategyProps> = ({
           value={selectedProjectId || ""}
           onChange={(e) => setSelectedProjectId(Number(e.target.value))}
           disabled={loadingProjects}
-        >
+          >
           <option value="">프로젝트를 선택하세요</option>
           {projects.map(project => (
             <option key={project.id} value={project.id}>
@@ -229,6 +226,13 @@ export const ImputationStrategy: React.FC<ImputationStrategyProps> = ({
         </S.FormSelect>
         {loadingProjects && <div style={{ fontSize: "0.875rem", color: "#666", marginTop: "0.5rem" }}>프로젝트 목록 로딩 중...</div>}
       </S.FormGroup>
+
+      <DataAnalysis />
+  
+      <S.SettingHeader>
+        <S.SettingIcon>🎯</S.SettingIcon>
+        <S.SettingTitle>보간 전략 설정</S.SettingTitle>
+      </S.SettingHeader>
 
       <S.FormGroup>
         <S.FormLabel>
@@ -259,15 +263,15 @@ export const ImputationStrategy: React.FC<ImputationStrategyProps> = ({
         <S.SliderTrack>
           <S.SliderFill $width={threshold} />
           <S.SliderThumb $left={threshold} />
+          <S.HiddenRangeInput
+            type="range"
+            min="0"
+            max="100"
+            value={threshold}
+            onChange={(e) => setThreshold(Number(e.target.value))}
+            aria-label="보간 임계값"
+          />
         </S.SliderTrack>
-        <input
-          type="range"
-          min="0"
-          max="100"
-          value={threshold}
-          onChange={(e) => setThreshold(Number(e.target.value))}
-          style={{ width: "100%", marginTop: "0.5rem" }}
-        />
         <S.SliderHelp>이 비율 이하의 결측만 보간합니다</S.SliderHelp>
       </S.SliderGroup>
 
@@ -279,15 +283,15 @@ export const ImputationStrategy: React.FC<ImputationStrategyProps> = ({
         <S.SliderTrack>
           <S.SliderFill $width={qualityThreshold} />
           <S.SliderThumb $left={qualityThreshold} />
+          <S.HiddenRangeInput
+            type="range"
+            min="0"
+            max="100"
+            value={qualityThreshold}
+            onChange={(e) => setQualityThreshold(Number(e.target.value))}
+            aria-label="품질 기준"
+          />
         </S.SliderTrack>
-        <input
-          type="range"
-          min="0"
-          max="100"
-          value={qualityThreshold}
-          onChange={(e) => setQualityThreshold(Number(e.target.value))}
-          style={{ width: "100%", marginTop: "0.5rem" }}
-        />
         <S.SliderHelp>보간 후 최소 품질 점수</S.SliderHelp>
       </S.SliderGroup>
 

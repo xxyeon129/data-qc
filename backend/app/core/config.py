@@ -2,6 +2,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 import logging
 import sys
+from urllib.parse import quote_plus
 
 # 로거 설정
 logging.basicConfig(

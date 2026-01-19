@@ -47,6 +47,10 @@ class ProjectCreate(BaseModel):
         populate_by_name = True
 
 
+class ProjectNameUpdate(BaseModel):
+    name: str
+
+
 class Project(ProjectBase):
     id: int
 

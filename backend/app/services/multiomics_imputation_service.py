@@ -10,12 +10,42 @@ import pandas as pd
 from typing import Dict, Any, Optional, Tuple, List
 from pathlib import Path
 import logging
-
-# MOCHI 모델 경로 추가
-sys.path.append("/home/humandeep/nmf/mochi_code")
-from models import Generator
+import os
 
 logger = logging.getLogger(__name__)
+
+# Generator 클래스를 lazy import로 처리
+Generator = None
+
+def _import_generator():
+    """Generator 클래스를 lazy import"""
+    global Generator
+    if Generator is not None:
+        return Generator
+    
+    # MOCHI 모델 경로 설정 (환경 변수 또는 기본값)
+    mochi_code_path = os.getenv("MOCHI_CODE_PATH", "/home/humandeep/nmf/mochi_code")
+    
+    if not os.path.exists(mochi_code_path):
+        raise ImportError(
+            f"MOCHI code path not found: {mochi_code_path}. "
+            f"Please set MOCHI_CODE_PATH environment variable or ensure the path exists."
+        )
+    
+    # 경로 추가
+    if mochi_code_path not in sys.path:
+        sys.path.append(mochi_code_path)
+    
+    try:
+        from models import Generator as Gen
+        Generator = Gen
+        return Generator
+    except ImportError as e:
+        raise ImportError(
+            f"Failed to import Generator from models module. "
+            f"Please ensure MOCHI code is available at {mochi_code_path}. "
+            f"Original error: {str(e)}"
+        )
 
 
 class MultiOmicsImputationService:
@@ -56,6 +86,8 @@ class MultiOmicsImputationService:
 
     def _init_generators(self):
         """Generator 모델 초기화"""
+        # Generator 클래스 import
+        Generator = _import_generator()
 
         # Gp: [RNA + Methyl] -> Protein
         self.Gp = Generator(

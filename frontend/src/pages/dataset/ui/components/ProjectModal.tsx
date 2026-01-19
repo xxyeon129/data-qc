@@ -69,7 +69,7 @@ export const ProjectModal = ({ onClose, onProjectCreated }: ProjectModalProps) =
           <S.FormGroup>
             <S.FormLabel>데이터 타입</S.FormLabel>
             <S.CheckboxGrid>
-              {["전사체", "대사체", "단백체", "메틸화"].map((type) => (
+              {["유전체(Genomics)", "전사체(Transcriptomics)", "단백질체(Proteomics)", "대사체(Metabolomics)", "임상정보(Phenotype)"].map((type) => (
                 <S.CheckboxLabel key={type}>
                   <input type="checkbox" checked={dataTypes.includes(type)} onChange={() => handleDataTypeChange(type)} />
                   {type}

@@ -29,6 +29,7 @@ def get_multiomics_service():
     global multiomics_service
     if multiomics_service is None:
         try:
+            from app.services.multiomics_imputation_service import MultiOmicsImputationService
             multiomics_service = MultiOmicsImputationService()
         except Exception as e:
             print(f"Failed to initialize MultiOmicsImputationService: {e}")
