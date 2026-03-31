@@ -2,7 +2,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 import logging
 import sys
+from pathlib import Path
 from urllib.parse import quote_plus
+
+# backend/ 디렉토리 기준 업로드 경로 (로컬)
+UPLOADS_DIR = Path(__file__).parent.parent.parent / "uploads"
 
 # 로거 설정
 logging.basicConfig(

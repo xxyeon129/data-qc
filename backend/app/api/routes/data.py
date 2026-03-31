@@ -62,9 +62,9 @@ async def upload_data_file(
         file_size = len(content)
         size_str = f"{file_size / (1024**3):.2f} GB" if file_size > 1024**3 else f"{file_size / (1024**2):.2f} MB"
 
-        # 업로드 디렉토리 생성 (홈 디렉토리 사용)
-        upload_base = Path("/home/humandeep/data-qc/uploads")
-        project_dir = upload_base / f"project_{project_id or 1}" / "raw"
+        # 업로드 디렉토리 생성
+        from app.core.config import UPLOADS_DIR
+        project_dir = UPLOADS_DIR / f"project_{project_id or 1}" / "raw"
         project_dir.mkdir(parents=True, exist_ok=True)
 
         # 파일 저장 경로

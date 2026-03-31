@@ -18,6 +18,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
+        "http://localhost:3001",
         "http://127.0.0.1:3000",
         "http://192.9.203.83:3000",  # 네트워크 IP 추가
         "https://gene-fe.vercel.app"

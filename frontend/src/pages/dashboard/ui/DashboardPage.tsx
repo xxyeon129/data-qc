@@ -4,8 +4,9 @@
 
 import * as S from "./dashboardPage.styles";
 import { StatCard } from "./components/StatCard";
-import { RecentActivity } from "./components/RecentActivity";
 import { QualityTrend } from "./components/QualityTrend";
+import { ProjectPreviewCard } from "./components/ProjectPreviewCard";
+import { PreviewGrid } from "./components/projectPreviewCard.styles";
 import { apiClient } from "@/shared/api";
 import type { Project } from "@/entities";
 import { useEffect, useState } from "react";
@@ -42,18 +43,30 @@ export const DashboardPage = () => {
         <StatCard value={stats?.avgMissingRate || "0%"} label="평균 결측률" color="purple" />
       </S.DashboardGrid>
 
-      {/* 최근 활동 섹션 - 주석처리됨 */}
-      {/* <S.Card>
+      {/* 프로젝트 미리보기 섹션 */}
+      <S.Card>
         <S.CardHeader>
-          <S.CardTitle>최근 활동</S.CardTitle>
-          <S.Button $variant="secondary">전체 보기</S.Button>
+          <div>
+            <S.SectionTitle>
+              프로젝트 관리
+              <S.SectionSubTitle>{projects.length}개 프로젝트</S.SectionSubTitle>
+            </S.SectionTitle>
+          </div>
         </S.CardHeader>
-        <RecentActivity />
-      </S.Card> */}
+        {projects.length === 0 ? (
+          <S.EmptyState>등록된 프로젝트가 없습니다.</S.EmptyState>
+        ) : (
+          <PreviewGrid>
+            {projects.map((project) => (
+              <ProjectPreviewCard key={project.id} project={project} />
+            ))}
+          </PreviewGrid>
+        )}
+      </S.Card>
 
       <S.Card>
         <S.CardHeader>
-          <S.CardTitle>품질 트렌드</S.CardTitle>
+          <S.SectionTitle>품질 트렌드</S.SectionTitle>
           <S.Select>
             <option>최근 7일</option>
             <option>최근 30일</option>

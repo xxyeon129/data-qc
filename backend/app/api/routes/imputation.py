@@ -267,8 +267,8 @@ def _run_multiomics_imputation(job_id: str, project_id: int, threshold: float = 
             raise RuntimeError("Failed to initialize MultiOmicsImputationService")
 
         # 데이터 로드
-        data_dir = Path("/home/humandeep/data-qc/uploads")
-        rna_df, protein_df, methyl_df = service.load_multiomics_data(project_id, data_dir)
+        from app.core.config import UPLOADS_DIR
+        rna_df, protein_df, methyl_df = service.load_multiomics_data(project_id, UPLOADS_DIR)
 
         if rna_df is None or protein_df is None or methyl_df is None:
             missing = []

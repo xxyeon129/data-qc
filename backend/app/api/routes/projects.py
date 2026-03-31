@@ -15,6 +15,40 @@ from app.db.session import get_db
 router = APIRouter()
 
 
+def _compute_total_size(data_files) -> str:
+    """데이터 파일들의 총 용량을 바이트로 합산 후 적절한 단위로 반환"""
+    total_bytes = 0.0
+    for f in data_files:
+        if not f.size:
+            continue
+        parts = f.size.strip().split()
+        if len(parts) != 2:
+            continue
+        try:
+            value = float(parts[0])
+            unit = parts[1].upper()
+            if unit == "GB":
+                total_bytes += value * 1024 ** 3
+            elif unit == "MB":
+                total_bytes += value * 1024 ** 2
+            elif unit == "KB":
+                total_bytes += value * 1024
+            elif unit == "B":
+                total_bytes += value
+        except ValueError:
+            continue
+
+    if total_bytes == 0:
+        return "-"
+    if total_bytes >= 1024 ** 3:
+        return f"{total_bytes / 1024 ** 3:.1f} GB"
+    if total_bytes >= 1024 ** 2:
+        return f"{total_bytes / 1024 ** 2:.1f} MB"
+    if total_bytes >= 1024:
+        return f"{total_bytes / 1024:.1f} KB"
+    return f"{int(total_bytes)} B"
+
+
 def project_to_dict(project: ProjectModel) -> dict:
     """SQLAlchemy 모델을 딕셔너리로 변환"""
     return {
@@ -32,6 +66,8 @@ def project_to_dict(project: ProjectModel) -> dict:
         "Methyl_qualityScore": project.methyl_quality_score,
         "Protein_qualityScore": project.protein_quality_score,
         "sample_accuracy": project.sample_accuracy,
+        "createdAt": project.created_at.strftime("%Y-%m-%d") if project.created_at else None,
+        "totalSize": _compute_total_size(project.data_files),
     }
 
 

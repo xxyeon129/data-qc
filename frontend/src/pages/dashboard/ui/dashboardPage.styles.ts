@@ -97,5 +97,28 @@ export const Select = styled.select`
   }
 `;
 
+export const SectionTitle = styled.h2`
+  font-size: 18px;
+  font-weight: 600;
+  color: #1e293b;
+`;
+
+export const SectionSubTitle = styled.span`
+  font-size: 13px;
+  color: #94a3b8;
+  font-weight: 400;
+  margin-left: 8px;
+`;
+
+export const EmptyState = styled.div`
+  padding: 48px 24px;
+  text-align: center;
+  color: #9ca3af;
+  background: #f9fafb;
+  border-radius: 10px;
+  border: 1px dashed #e5e7eb;
+  font-size: 14px;
+`;
+
 
 

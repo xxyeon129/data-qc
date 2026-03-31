@@ -22,10 +22,8 @@ class ProjectBase(BaseModel):
     methyl_quality_score: Optional[float] = Field(None, alias="Methyl_qualityScore")
     protein_quality_score: Optional[float] = Field(None, alias="Protein_qualityScore")
     sample_accuracy: Optional[float] = Field(None, alias="sample_accuracy")
-    # file_count: Optional[int] = Field(None, alias="fileCount")
-    # size: Optional[str] = None
-    # current_status: Optional[str] = Field(None, alias="currentStatus")
-    # created_at: Optional[str] = Field(None, alias="createdAt")
+    created_at: Optional[str] = Field(None, alias="createdAt")
+    total_size: Optional[str] = Field(None, alias="totalSize")
 
 
 class ProjectCreate(BaseModel):

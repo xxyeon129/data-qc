@@ -1,60 +1,43 @@
 import * as S from "./progressSteps.styles";
-
-interface ValidationResult {
-  files: Array<{
-    filename: string;
-    total_values: number;
-    nan_count: number;
-    nan_percentage: number;
-    shape: number[];
-    passed: boolean;
-  }>;
-  total_files: number;
-  passed_files: number;
-  all_passed: boolean;
-}
+import type { ValidationResult } from "../ValidationPage";
 
 interface ProgressStepsProps {
   validationResult: ValidationResult | null;
+  validating?: boolean;
 }
 
-export const ProgressSteps = ({ validationResult }: ProgressStepsProps) => {
-  const steps = [
-    {
-      number: "✓",
-      label: "데이터 로드",
-      status: validationResult ? "completed" : "pending"
-    },
-    {
-      number: "✓",
-      label: "형식 검사",
-      status: validationResult ? "completed" : "pending"
-    },
-    {
-      number: validationResult ? "✓" : "3",
-      label: "품질 검증",
-      status: validationResult ? "completed" : "active"
-    },
-    {
-      number: validationResult ? "✓" : "4",
-      label: "보고서 생성",
-      status: validationResult ? "completed" : "pending"
-    },
-  ];
+const STEP_LABELS = ["데이터 로드", "형식 검사", "품질 검증", "보고서 생성"];
+
+type StepStatus = "completed" | "active" | "pending";
+
+function getStepStatus(stepIndex: number, isDone: boolean, validating: boolean): StepStatus {
+  if (isDone) return "completed";
+  if (validating && stepIndex <= 1) return "completed";
+  if (validating && stepIndex === 2) return "active";
+  return "pending";
+}
+
+function getStepNumber(stepIndex: number, isDone: boolean, validating: boolean): string {
+  const status = getStepStatus(stepIndex, isDone, validating);
+  if (status === "completed") return "✓";
+  return String(stepIndex + 1);
+}
+
+export const ProgressSteps = ({ validationResult, validating = false }: ProgressStepsProps) => {
+  const isDone = !!validationResult;
 
   return (
     <S.ProgressSteps>
-      {steps.map((step, index) => (
-        <S.ProgressStep key={index} $status={step.status as "completed" | "active" | "pending"}>
-          <S.ProgressCircle $status={step.status as "completed" | "active" | "pending"}>
-            {step.number}
-          </S.ProgressCircle>
-          <S.ProgressLabel>{step.label}</S.ProgressLabel>
-        </S.ProgressStep>
-      ))}
+      {STEP_LABELS.map((label, index) => {
+        const status = getStepStatus(index, isDone, validating);
+        const number = getStepNumber(index, isDone, validating);
+        return (
+          <S.ProgressStep key={label} $status={status}>
+            <S.ProgressCircle $status={status}>{number}</S.ProgressCircle>
+            <S.ProgressLabel>{label}</S.ProgressLabel>
+          </S.ProgressStep>
+        );
+      })}
     </S.ProgressSteps>
   );
 };
-
-
-

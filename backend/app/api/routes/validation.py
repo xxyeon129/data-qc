@@ -1,12 +1,13 @@
 """
 Data validation API routes
-간단한 검증 기능 (NaN 값 확인)
+GENE-QC 품질 지표 기반 검증 (Completeness · Plausibility · Conformance)
 """
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from pydantic import BaseModel
 import uuid
+import re
 from datetime import datetime
 from pathlib import Path
 import pandas as pd
@@ -208,6 +209,249 @@ async def download_validation_report(project_id: int):
         )
 
 
+def _infer_data_type(filename: str) -> str:
+    """파일명 기반 데이터 유형 자동 추론"""
+    lower = filename.lower()
+    if "rna" in lower or "transcriptom" in lower or "expression" in lower:
+        return "transcriptomics"
+    if "dna" in lower or "snp" in lower or "genomic" in lower:
+        return "genomics"
+    if "methylat" in lower or "methyl" in lower or "methy" in lower:
+        return "genomics"
+    if "protein" in lower or "proteom" in lower or "prot" in lower:
+        return "proteomics"
+    if "metabol" in lower:
+        return "metabolomics"
+    if "meta" in lower or "clinical" in lower or "phenotype" in lower:
+        return "metadata"
+    return "unknown"
+
+
+def _get_missing_threshold(data_type: str, rules: Dict[str, Any]) -> float:
+    """데이터 유형별 결측률 임계값 반환"""
+    type_map = {
+        "genomics": rules.get("dna_threshold", 1.0),
+        "transcriptomics": rules.get("rna_threshold", 20.0),
+        "proteomics": rules.get("protein_threshold", 25.0),
+        "metabolomics": rules.get("methyl_threshold", 25.0),
+    }
+    return type_map.get(data_type, 30.0)
+
+
+def _evaluate_gene_qc_rules(
+    df: pd.DataFrame,
+    filename: str,
+    data_type: str,
+    rules: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """파일에 대한 GENE-QC 규칙 평가 — Completeness · Plausibility · Conformance"""
+    results: List[Dict[str, Any]] = []
+    is_omics = data_type in ("genomics", "transcriptomics", "proteomics", "metabolomics")
+    threshold_missing = _get_missing_threshold(data_type, rules)
+
+    def _rule(rule_id, name, dimension, level, severity, status, message, metric=None, threshold=None):
+        return {
+            "ruleId": rule_id,
+            "ruleName": name,
+            "dimension": dimension,
+            "level": level,
+            "severity": severity,
+            "fileName": filename,
+            "status": status,
+            "message": message,
+            "metricValue": metric,
+            "threshold": threshold,
+        }
+
+    # ── Completeness ────────────────────────────────────────────
+
+    # comp_F001: 파일 헤더 존재 여부
+    has_header = len(df.columns) >= 2
+    results.append(_rule(
+        "comp_F001", "파일 헤더 존재 여부", "Completeness", "basic", "fatal",
+        "pass" if has_header else "fail",
+        f"헤더 행 존재 — {len(df.columns)}개 컬럼 확인" if has_header
+        else "헤더 행이 없거나 컬럼이 1개 이하입니다.",
+        len(df.columns), 2,
+    ))
+
+    # comp_C001: 샘플 ID 컬럼 필수 존재
+    null_ids = int(df.index.isnull().sum()) if hasattr(df.index, "isnull") else 0
+    results.append(_rule(
+        "comp_C001", "샘플 ID 컬럼 필수 존재", "Completeness", "basic", "fatal",
+        "pass" if null_ids == 0 else "fail",
+        f"샘플 ID 컬럼 존재 ({len(df):,}개 샘플)" if null_ids == 0
+        else f"샘플 ID에 NULL 값 {null_ids}개 존재",
+        null_ids, 0,
+    ))
+
+    # comp_C002: 컬럼별 결측률 검사
+    col_nan_pct = df.isna().sum(axis=0) / max(len(df), 1) * 100
+    max_col_nan = float(col_nan_pct.max()) if len(col_nan_pct) > 0 else 0.0
+    cols_exceeding = int((col_nan_pct > threshold_missing).sum())
+    results.append(_rule(
+        "comp_C002", "컬럼별 결측률 검사", "Completeness", "basic", "warning",
+        "pass" if max_col_nan <= threshold_missing else "warning",
+        f"최대 컬럼 결측률 {max_col_nan:.1f}% (임계값: {threshold_missing}%)"
+        if max_col_nan <= threshold_missing
+        else f"결측률 초과 컬럼 {cols_exceeding}개 — 최대 {max_col_nan:.1f}%",
+        round(max_col_nan, 2), threshold_missing,
+    ))
+
+    # comp_C003: 행(샘플) 완전성 검사
+    row_nan_pct = df.isna().sum(axis=1) / max(len(df.columns), 1) * 100
+    rows_below_50 = int((row_nan_pct > 50).sum())
+    max_row_nan = float(row_nan_pct.max()) if len(row_nan_pct) > 0 else 0.0
+    results.append(_rule(
+        "comp_C003", "행(샘플) 완전성 검사", "Completeness", "basic", "warning",
+        "pass" if rows_below_50 == 0 else "warning",
+        "모든 행의 완전성 ≥ 50%"
+        if rows_below_50 == 0
+        else f"완전성 50% 미만 샘플 {rows_below_50}개 (최대 결측률: {max_row_nan:.1f}%)",
+        round(max_row_nan, 2), 50,
+    ))
+
+    # comp_F003: 전체 데이터 결측률 (omics 전용)
+    if is_omics:
+        total_nan_pct = float(df.isna().sum().sum() / max(df.size, 1) * 100)
+        results.append(_rule(
+            "comp_F003", "전체 데이터 결측률", "Completeness", "basic", "warning",
+            "pass" if total_nan_pct <= threshold_missing else "warning",
+            f"전체 결측률 {total_nan_pct:.2f}% (임계값: {threshold_missing}%)",
+            round(total_nan_pct, 2), threshold_missing,
+        ))
+
+    # ── Plausibility ─────────────────────────────────────────────
+
+    if is_omics:
+        numeric_df = df.select_dtypes(include=[np.number])
+
+        if len(numeric_df.columns) > 0:
+            # plau_C001: 발현값 하한 검사
+            try:
+                min_val = float(numeric_df.min().min())
+                below_min = min_val < -100
+                results.append(_rule(
+                    "plau_C001", "발현값 하한 검사", "Plausibility", "basic", "characterization",
+                    "warning" if below_min else "pass",
+                    f"하한값(-100) 미만 값 존재 (최솟값: {min_val:.2f})"
+                    if below_min else f"최솟값 {min_val:.2f} — 정상 범위",
+                    round(min_val, 2), -100,
+                ))
+            except Exception:
+                pass
+
+            # plau_C002: 발현값 상한 검사
+            try:
+                max_val = float(numeric_df.max().max())
+                results.append(_rule(
+                    "plau_C002", "발현값 상한 검사", "Plausibility", "basic", "characterization",
+                    "pass",
+                    f"최댓값 {max_val:.2f} — 분포 확인",
+                    round(max_val, 2), None,
+                ))
+            except Exception:
+                pass
+
+            # plau_C003: IQR 기반 이상치 검사
+            try:
+                q1 = numeric_df.quantile(0.25)
+                q3 = numeric_df.quantile(0.75)
+                iqr = q3 - q1
+                outlier_mask = (numeric_df < (q1 - 1.5 * iqr)) | (numeric_df > (q3 + 1.5 * iqr))
+                total_numeric = int(numeric_df.count().sum())
+                outlier_count = int(outlier_mask.sum().sum())
+                outlier_rate = round(outlier_count / max(total_numeric, 1) * 100, 2)
+                iqr_threshold = 5.0
+                results.append(_rule(
+                    "plau_C003", "IQR 기반 이상치 검사", "Plausibility", "basic", "warning",
+                    "pass" if outlier_rate <= iqr_threshold else "warning",
+                    f"이상치 비율 {outlier_rate:.2f}% (임계값: {iqr_threshold}%)",
+                    outlier_rate, iqr_threshold,
+                ))
+            except Exception:
+                pass
+
+            # plau_C004: 상수값 컬럼 탐지 (분산=0)
+            try:
+                zero_var_cols = int((numeric_df.std() == 0).sum())
+                results.append(_rule(
+                    "plau_C004", "상수값 컬럼 탐지 (분산=0)", "Plausibility", "basic", "warning",
+                    "pass" if zero_var_cols == 0 else "warning",
+                    "분산=0인 컬럼 없음"
+                    if zero_var_cols == 0 else f"분산=0인 컬럼 {zero_var_cols}개 탐지",
+                    zero_var_cols, 0,
+                ))
+            except Exception:
+                pass
+
+    # ── Conformance ──────────────────────────────────────────────
+
+    # conf_F001: 파일 형식(구분자) 일관성 — 정상 로드 완료 시 통과
+    results.append(_rule(
+        "conf_F001", "파일 형식(구분자) 일관성", "Conformance", "basic", "fatal",
+        "pass",
+        "파일 구분자가 일관되게 사용됩니다.",
+        None, None,
+    ))
+
+    # conf_C001: 샘플 ID 중복 검사
+    try:
+        dup_count = int(df.index.duplicated().sum())
+        results.append(_rule(
+            "conf_C001", "샘플 ID 중복 검사", "Conformance", "basic", "fatal",
+            "pass" if dup_count == 0 else "fail",
+            "샘플 ID 중복 없음" if dup_count == 0 else f"중복 샘플 ID {dup_count}개 발견",
+            dup_count, 0,
+        ))
+    except Exception:
+        pass
+
+    # conf_C002: 수치형 컬럼 데이터 타입 검사 (omics 전용)
+    if is_omics:
+        numeric_cols = len(df.select_dtypes(include=[np.number]).columns)
+        total_cols = len(df.columns)
+        non_numeric = total_cols - numeric_cols
+        results.append(_rule(
+            "conf_C002", "수치형 컬럼 데이터 타입 검사", "Conformance", "basic", "error",
+            "pass" if non_numeric == 0 else "fail",
+            "모든 데이터 컬럼이 수치형입니다."
+            if non_numeric == 0 else f"비수치형 컬럼 {non_numeric}개 탐지",
+            non_numeric, 0,
+        ))
+
+    # conf_C003: 컬럼명 형식 검사
+    pattern = re.compile(r"^[a-zA-Z0-9_.가-힣\-]+$")
+    bad_cols = [c for c in df.columns if not pattern.match(str(c))]
+    results.append(_rule(
+        "conf_C003", "컬럼명 형식 검사", "Conformance", "basic", "convention",
+        "pass" if len(bad_cols) == 0 else "convention",
+        "컬럼명 형식 이상 없음"
+        if len(bad_cols) == 0
+        else f"형식 위반 컬럼명 {len(bad_cols)}개: {', '.join(str(c) for c in bad_cols[:3])}{'...' if len(bad_cols) > 3 else ''}",
+        len(bad_cols), 0,
+    ))
+
+    return results
+
+
+def _build_dimension_summary(rule_results: List[Dict[str, Any]]) -> Dict[str, Dict[str, int]]:
+    """차원별 통과/경고/실패 수 집계"""
+    summary: Dict[str, Dict[str, int]] = {
+        "Completeness": {"pass": 0, "warning": 0, "fail": 0, "convention": 0, "total": 0},
+        "Plausibility": {"pass": 0, "warning": 0, "fail": 0, "convention": 0, "total": 0},
+        "Conformance": {"pass": 0, "warning": 0, "fail": 0, "convention": 0, "total": 0},
+    }
+    for r in rule_results:
+        dim = r.get("dimension", "")
+        status = r.get("status", "pass")
+        if dim in summary:
+            key = status if status in ("pass", "warning", "fail", "convention") else "pass"
+            summary[dim][key] += 1
+            summary[dim]["total"] += 1
+    return summary
+
+
 def _run_validation(job_id: str, project_id: int, rules: Dict[str, Any]):
     """검증 백그라운드 작업"""
     try:
@@ -215,8 +459,8 @@ def _run_validation(job_id: str, project_id: int, rules: Dict[str, Any]):
         print(f"[Job {job_id}] Using validation rules: {rules}")
 
         # 데이터 로드
-        data_dir = Path("/home/humandeep/data-qc/uploads")
-        project_dir = data_dir / f"project_{project_id}" / "raw"
+        from app.core.config import UPLOADS_DIR
+        project_dir = UPLOADS_DIR / f"project_{project_id}" / "raw"
 
         if not project_dir.exists():
             raise FileNotFoundError(f"Project directory not found: {project_dir}")
@@ -227,6 +471,7 @@ def _run_validation(job_id: str, project_id: int, rules: Dict[str, Any]):
             raise FileNotFoundError(f"No TSV files found in {project_dir}")
 
         results = []
+        all_rule_results: List[Dict[str, Any]] = []
 
         # 데이터셋별 완전성 저장
         completeness_scores = {
@@ -239,53 +484,42 @@ def _run_validation(job_id: str, project_id: int, rules: Dict[str, Any]):
         for file_path in files:
             print(f"[Job {job_id}] Validating {file_path.name}")
 
-            # 파일 로드
             try:
                 df = pd.read_csv(file_path, sep="\t", index_col=0)
 
-                # NaN 값 확인
+                # NaN 기본 통계
                 total_values = df.size
-                nan_count = df.isna().sum().sum()
+                nan_count = int(df.isna().sum().sum())
                 nan_percentage = (nan_count / total_values * 100) if total_values > 0 else 0
 
-                # 행별, 열별 NaN 비율
-                row_nan_percentages = (df.isna().sum(axis=1) / len(df.columns) * 100)
-                col_nan_percentages = (df.isna().sum(axis=0) / len(df) * 100)
+                row_nan_percentages = df.isna().sum(axis=1) / max(len(df.columns), 1) * 100
+                col_nan_percentages = df.isna().sum(axis=0) / max(len(df), 1) * 100
+                max_row_nan = float(row_nan_percentages.max()) if len(row_nan_percentages) > 0 else 0
+                max_col_nan = float(col_nan_percentages.max()) if len(col_nan_percentages) > 0 else 0
 
-                # 최대 NaN 비율을 가진 행/열
-                max_row_nan = row_nan_percentages.max() if len(row_nan_percentages) > 0 else 0
-                max_col_nan = col_nan_percentages.max() if len(col_nan_percentages) > 0 else 0
+                # 데이터 유형 추론
+                inferred_type = _infer_data_type(file_path.name)
+                threshold = _get_missing_threshold(inferred_type, rules)
 
-                # 파일 타입별로 적절한 임계값 선택
-                filename_lower = file_path.name.lower()
-                if "dna" in filename_lower or "snp" in filename_lower:
-                    threshold = rules.get("dna_threshold", 1.0)
-                    data_type = "DNA"
-                elif "rna" in filename_lower:
-                    threshold = rules.get("rna_threshold", 20.0)
-                    data_type = "RNA"
-                elif "protein" in filename_lower or "prot" in filename_lower:
-                    threshold = rules.get("protein_threshold", 25.0)
-                    data_type = "Protein"
-                elif "methy" in filename_lower or "methyl" in filename_lower:
-                    threshold = rules.get("methyl_threshold", 25.0)
-                    data_type = "Methyl"
-                else:
-                    # 기본 임계값
-                    threshold = 50.0
-                    data_type = "Unknown"
+                # 기존 호환용 data_type 레이블
+                dtype_label_map = {
+                    "genomics": "DNA",
+                    "transcriptomics": "RNA",
+                    "proteomics": "Protein",
+                    "metabolomics": "Methyl",
+                    "metadata": "Metadata",
+                }
+                data_type = dtype_label_map.get(inferred_type, "Unknown")
 
-                # 결측치 비율이 임계값 이하인지 확인
                 passed = bool(nan_percentage <= threshold)
-
-                # 완전성 점수 계산 (100 - 결측치 비율)
                 completeness = 100.0 - nan_percentage
 
                 file_result = {
                     "filename": file_path.name,
                     "data_type": data_type,
+                    "inferred_type": inferred_type,
                     "total_values": int(total_values),
-                    "nan_count": int(nan_count),
+                    "nan_count": nan_count,
                     "nan_percentage": round(float(nan_percentage), 2),
                     "completeness": round(float(completeness), 2),
                     "shape": list(df.shape),
@@ -295,7 +529,7 @@ def _run_validation(job_id: str, project_id: int, rules: Dict[str, Any]):
                     "passed": passed,
                 }
 
-                # 데이터셋별 완전성 점수 저장
+                # 완전성 점수 저장
                 if data_type == "DNA":
                     completeness_scores["dna"] = completeness
                 elif data_type == "RNA":
@@ -306,18 +540,24 @@ def _run_validation(job_id: str, project_id: int, rules: Dict[str, Any]):
                     completeness_scores["protein"] = completeness
 
                 results.append(file_result)
-                print(f"[Job {job_id}] {file_path.name} ({data_type}): {nan_percentage:.2f}% NaN, {completeness:.2f}% Complete (threshold: {threshold}%) - {'PASSED' if passed else 'FAILED'}")
+
+                # GENE-QC 규칙 평가
+                file_rule_results = _evaluate_gene_qc_rules(df, file_path.name, inferred_type, rules)
+                all_rule_results.extend(file_rule_results)
+
+                print(f"[Job {job_id}] {file_path.name} ({data_type}): {nan_percentage:.2f}% NaN — {'PASSED' if passed else 'FAILED'}")
 
             except Exception as e:
                 print(f"[Job {job_id}] Failed to validate {file_path.name}: {e}")
                 results.append({
                     "filename": file_path.name,
                     "error": str(e),
-                    "passed": False
+                    "passed": False,
                 })
 
         # 전체 검증 결과
         all_passed = all(r.get("passed", False) for r in results)
+        dimension_summary = _build_dimension_summary(all_rule_results)
 
         # 프로젝트 DB 업데이트
         try:
@@ -381,6 +621,8 @@ def _run_validation(job_id: str, project_id: int, rules: Dict[str, Any]):
                 "passed_files": sum(1 for r in results if r.get("passed", False)),
                 "all_passed": all_passed,
                 "completeness_scores": completeness_scores,
+                "rule_results": all_rule_results,
+                "dimension_summary": dimension_summary,
             }
         }
 
