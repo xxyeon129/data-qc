@@ -33,7 +33,6 @@ export const ProjectPreviewCard = ({ project }: ProjectPreviewCardProps) => {
     ? omicsTypes.map((o) => o.key)
     : project.dataType ?? [];
 
-  const isValidated = project.validationStatus === "검증완료";
   const hasScores = omicsTypes.length > 0;
 
   const sampleCount = project.sampleCount
@@ -87,7 +86,7 @@ export const ProjectPreviewCard = ({ project }: ProjectPreviewCardProps) => {
 
       {/* 검증 결과 섹션 */}
       <S.ValidationSection>
-        {isValidated && hasScores ? (
+        {hasScores ? (
           <>
             <S.ValidationTitle>검증 결과 요약</S.ValidationTitle>
             <S.OmicsScoreRow>

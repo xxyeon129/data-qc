@@ -14,7 +14,7 @@ from app.models.schemas import (
 )
 from app.services.imputation_service import ImputationService
 from app.services.ml_model_client import MLModelClient
-from app.services.multiomics_imputation_service import MultiOmicsImputationService
+from app.services.remote_multiomics_service import RemoteMultiOmicsImputationService
 from pathlib import Path
 
 router = APIRouter()
@@ -23,16 +23,18 @@ ml_client = MLModelClient()
 
 # 멀티오믹스 서비스 (싱글톤)
 multiomics_service = None
+multiomics_service_init_error = None
 
 def get_multiomics_service():
-    """멀티오믹스 서비스 인스턴스 가져오기 (lazy loading)"""
-    global multiomics_service
+    """원격 멀티오믹스 서비스 인스턴스 가져오기 (lazy loading)"""
+    global multiomics_service, multiomics_service_init_error
     if multiomics_service is None:
         try:
-            from app.services.multiomics_imputation_service import MultiOmicsImputationService
-            multiomics_service = MultiOmicsImputationService()
+            multiomics_service = RemoteMultiOmicsImputationService()
+            multiomics_service_init_error = None
         except Exception as e:
-            print(f"Failed to initialize MultiOmicsImputationService: {e}")
+            multiomics_service_init_error = str(e)
+            print(f"Failed to initialize RemoteMultiOmicsImputationService: {multiomics_service_init_error}")
             multiomics_service = None
     return multiomics_service
 
@@ -256,7 +258,7 @@ async def execute_multiomics_imputation(
 
 
 def _run_multiomics_imputation(job_id: str, project_id: int, threshold: float = 30.0, quality_threshold: float = 85.0):
-    """멀티오믹스 보간 백그라운드 작업"""
+    """원격 서버 기반 멀티오믹스 보간 백그라운드 작업"""
     try:
         print(f"[Job {job_id}] Starting multi-omics imputation for project {project_id}")
         print(f"[Job {job_id}] Parameters - threshold: {threshold}%, quality_threshold: {quality_threshold}%")
@@ -264,43 +266,45 @@ def _run_multiomics_imputation(job_id: str, project_id: int, threshold: float = 
         # 서비스 인스턴스 가져오기
         service = get_multiomics_service()
         if service is None:
-            raise RuntimeError("Failed to initialize MultiOmicsImputationService")
+            detail = multiomics_service_init_error or "unknown initialization error"
+            raise RuntimeError(f"Failed to initialize RemoteMultiOmicsImputationService: {detail}")
 
-        # 데이터 로드
+        # 로컬 원본 데이터를 원격 서버로 업로드
         from app.core.config import UPLOADS_DIR
-        rna_df, protein_df, methyl_df = service.load_multiomics_data(project_id, UPLOADS_DIR)
+        upload_ok, upload_msg = service.upload_data_files(project_id, UPLOADS_DIR)
+        if not upload_ok:
+            raise RuntimeError(upload_msg)
+        print(f"[Job {job_id}] Upload completed: {upload_msg}")
 
-        if rna_df is None or protein_df is None or methyl_df is None:
-            missing = []
-            if rna_df is None:
-                missing.append("RNA")
-            if protein_df is None:
-                missing.append("Protein")
-            if methyl_df is None:
-                missing.append("Methyl")
-            raise ValueError(f"Missing required omics data: {', '.join(missing)}")
+        # 원격 서버에서 보간 실행
+        remote_ok, remote_msg, statistics = service.execute_remote_imputation(
+            project_id=project_id,
+            job_id=job_id
+        )
+        if not remote_ok:
+            raise RuntimeError(remote_msg)
+        print(f"[Job {job_id}] Remote imputation completed: {remote_msg}")
 
-        print(f"[Job {job_id}] Data loaded - RNA: {rna_df.shape}, Protein: {protein_df.shape}, Methyl: {methyl_df.shape}")
-
-        # 보간 수행
-        results = service.impute_multiomics(rna_df, protein_df, methyl_df)
-
-        # 보간 결과 저장
-        output_dir = data_dir / f"project_{project_id}" / "imputed"
+        # 원격 결과를 로컬로 다운로드
+        output_dir = UPLOADS_DIR / f"project_{project_id}" / "imputed"
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        rna_output = output_dir / f"{job_id}_rna_imputed.tsv"
-        protein_output = output_dir / f"{job_id}_protein_imputed.tsv"
-        methyl_output = output_dir / f"{job_id}_methyl_imputed.tsv"
-
-        results['rna'].to_csv(rna_output, sep="\t")
-        results['protein'].to_csv(protein_output, sep="\t")
-        results['methyl'].to_csv(methyl_output, sep="\t")
+        download_ok, download_msg, downloaded_files = service.download_results(
+            project_id=project_id,
+            job_id=job_id,
+            local_output_dir=output_dir
+        )
+        if not download_ok:
+            raise RuntimeError(download_msg)
+        print(f"[Job {job_id}] Download completed: {download_msg}")
 
         print(f"[Job {job_id}] Results saved to {output_dir}")
 
         # 작업 상태 업데이트
-        stats = results['statistics']
+        stats = statistics or {}
+        rna_output = downloaded_files.get("rna")
+        protein_output = downloaded_files.get("protein")
+        methyl_output = downloaded_files.get("methyl")
         imputation_jobs[job_id] = {
             "status": "completed",
             "created_at": imputation_jobs[job_id]["created_at"],
@@ -308,14 +312,14 @@ def _run_multiomics_imputation(job_id: str, project_id: int, threshold: float = 
             "project_id": project_id,
             "method": "mochi_multiomics",
             "results": {
-                "rna_missing_imputed": int(stats['rna_missing_before']),
-                "protein_missing_imputed": int(stats['protein_missing_before']),
-                "methyl_missing_imputed": int(stats['methyl_missing_before']),
-                "total_samples": int(stats['total_samples']),
+                "rna_missing_imputed": int(stats.get('rna_missing_before', 0)),
+                "protein_missing_imputed": int(stats.get('protein_missing_before', 0)),
+                "methyl_missing_imputed": int(stats.get('methyl_missing_before', 0)),
+                "total_samples": int(stats.get('total_samples', 0)),
                 "output_files": {
-                    "rna": str(rna_output),
-                    "protein": str(protein_output),
-                    "methyl": str(methyl_output)
+                    "rna": str(rna_output) if rna_output else None,
+                    "protein": str(protein_output) if protein_output else None,
+                    "methyl": str(methyl_output) if methyl_output else None,
                 }
             }
         }

@@ -11,6 +11,7 @@ from typing import Dict, Any, Optional, Tuple, List
 from pathlib import Path
 import logging
 import os
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +52,23 @@ def _import_generator():
 class MultiOmicsImputationService:
     """멀티오믹스 데이터 보간 서비스"""
 
-    def __init__(self, checkpoint_path: str = "/home/humandeep/nmf/mochi_code/results/tri_joint_v2/tri_best.ckpt"):
+    def __init__(self, checkpoint_path: Optional[str] = None):
         """
         Args:
             checkpoint_path: MOCHI 모델 체크포인트 경로
         """
-        self.checkpoint_path = checkpoint_path
+        resolved_checkpoint_path = (
+            checkpoint_path
+            or settings.ml_model_path
+            or os.getenv("MOCHI_CHECKPOINT_PATH")
+        )
+        if not resolved_checkpoint_path:
+            raise ValueError(
+                "MOCHI checkpoint path is not configured. "
+                "Set ML_MODEL_PATH in .env or pass checkpoint_path explicitly."
+            )
+
+        self.checkpoint_path = resolved_checkpoint_path
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
         # 모델 차원 (BRCA PAM50 데이터 기준)

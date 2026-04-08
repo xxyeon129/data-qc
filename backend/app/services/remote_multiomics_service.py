@@ -5,13 +5,12 @@ SSH를 통해 원격 서버에서 MOCHI 모델을 실행하는 서비스
 
 import logging
 import json
-import tempfile
+import shlex
 from pathlib import Path
 from typing import Dict, Any, Tuple, Optional
-import pandas as pd
-from datetime import datetime
 
 from app.services.ml_model_client import MLModelClient
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -21,11 +20,117 @@ class RemoteMultiOmicsImputationService:
     
     def __init__(self):
         self.ml_client = MLModelClient()
-        self.remote_data_dir = "/home/humandeep/data-qc/uploads"
-        self.remote_script_path = "/home/humandeep/nmf/mochi_code/impute_multiomics.py"
-        self.remote_model_path = "/home/humandeep/nmf/mochi_code/results/tri_joint_v2/tri_best.ckpt"
-        # 원격 서버의 Python 환경 경로 (가상환경 또는 conda 환경)
-        self.remote_python_path = "/home/humandeep/anaconda3/envs/mochi/bin/python"  # 또는 venv/bin/python
+        self.remote_home_dir: Optional[str] = None
+        self.remote_data_dir: Optional[str] = None
+        self.remote_script_path: Optional[str] = None
+        self.remote_model_path: Optional[str] = None
+        self._path_initialized = False
+
+    def _initialize_remote_paths(self, ssh) -> None:
+        """원격 서버의 HOME 기반으로 실행 경로를 동적 초기화"""
+        if self._path_initialized:
+            return
+
+        default_home = f"/home/{self.ml_client.final_user or settings.ml_server_final_user or 'humandeep'}"
+        remote_home = default_home
+
+        try:
+            stdin, stdout, stderr = ssh.exec_command("echo $HOME", timeout=5)
+            if stdout.channel.recv_exit_status() == 0:
+                detected_home = stdout.read().decode().strip()
+                if detected_home:
+                    remote_home = detected_home
+        except Exception:
+            logger.warning("Failed to detect remote HOME, using fallback path")
+
+        model_path = settings.ml_model_path or f"{remote_home}/nmf/mochi_code/results/tri_joint_v2/tri_best.ckpt"
+        script_path = f"{remote_home}/nmf/mochi_code/impute_multiomics.py"
+        data_dir = f"{remote_home}/data-qc/uploads"
+
+        self.remote_home_dir = remote_home
+        self.remote_data_dir = data_dir
+        self.remote_script_path = script_path
+        self.remote_model_path = model_path
+        self._path_initialized = True
+
+        logger.info(
+            "Initialized remote paths - home: %s, data_dir: %s, script_path: %s, model_path: %s",
+            self.remote_home_dir,
+            self.remote_data_dir,
+            self.remote_script_path,
+            self.remote_model_path,
+        )
+
+    def _resolve_remote_model_checkpoint(self, ssh) -> str:
+        """체크포인트 경로를 원격 서버에서 검증/보정하여 실제 파일 경로를 반환"""
+        if not self.remote_model_path:
+            raise RuntimeError("Remote model path is not initialized")
+
+        configured_path = self.remote_model_path.strip()
+        quoted_path = shlex.quote(configured_path)
+
+        # 1) 설정값이 이미 파일 경로인 경우 그대로 사용
+        stdin, stdout, stderr = ssh.exec_command(
+            f"bash -l -c 'if [ -f {quoted_path} ]; then echo FILE; fi'",
+            timeout=5,
+        )
+        stdout.channel.recv_exit_status()
+        if stdout.read().decode().strip() == "FILE":
+            return configured_path
+
+        # 2) 설정값이 디렉토리인 경우 대표 체크포인트를 우선 검색
+        stdin, stdout, stderr = ssh.exec_command(
+            f"bash -l -c 'if [ -d {quoted_path} ]; then echo DIR; fi'",
+            timeout=5,
+        )
+        stdout.channel.recv_exit_status()
+        is_directory = stdout.read().decode().strip() == "DIR"
+
+        candidates = []
+        if is_directory:
+            candidates.extend([
+                f"{configured_path}/tri_best.ckpt",
+                f"{configured_path}/results/tri_joint_v2/tri_best.ckpt",
+                f"{configured_path}/mochi_code/results/tri_joint_v2/tri_best.ckpt",
+            ])
+
+        # 3) 기본 후보들 (원격 HOME 기준)
+        candidates.extend([
+            f"{self.remote_home_dir}/nmf/mochi_code/results/tri_joint_v2/tri_best.ckpt",
+            f"{self.remote_home_dir}/nmf/mochi_code/results/tri_joint_v2/tri_final.ckpt",
+        ])
+
+        # 중복 제거
+        unique_candidates = []
+        seen = set()
+        for candidate in candidates:
+            if candidate not in seen:
+                unique_candidates.append(candidate)
+                seen.add(candidate)
+
+        for candidate in unique_candidates:
+            quoted_candidate = shlex.quote(candidate)
+            stdin, stdout, stderr = ssh.exec_command(
+                f"bash -l -c 'if [ -f {quoted_candidate} ]; then echo {quoted_candidate}; fi'",
+                timeout=5,
+            )
+            stdout.channel.recv_exit_status()
+            resolved = stdout.read().decode().strip()
+            if resolved:
+                if configured_path != resolved:
+                    logger.warning(
+                        "Configured ML_MODEL_PATH is not a checkpoint file (%s). Using resolved checkpoint: %s",
+                        configured_path,
+                        resolved,
+                    )
+                self.remote_model_path = resolved
+                return resolved
+
+        raise RuntimeError(
+            "Could not resolve checkpoint file on remote server. "
+            f"Configured ML_MODEL_PATH={configured_path}. "
+            "Please set ML_MODEL_PATH to a .ckpt file path."
+        )
     
     def check_connection(self) -> bool:
         """원격 서버 연결 확인"""
@@ -44,6 +149,7 @@ class RemoteMultiOmicsImputationService:
         """
         try:
             ssh = self.ml_client._connect_via_jump_server()
+            self._initialize_remote_paths(ssh)
             
             env_info = {
                 "connection": "success",
@@ -64,8 +170,8 @@ class RemoteMultiOmicsImputationService:
             conda_check_commands = [
                 "bash -l -c 'which conda'",
                 "bash -l -c 'command -v conda'",
-                "ls -la /home/humandeep/anaconda3/bin/conda",
-                "ls -la /home/humandeep/miniconda3/bin/conda"
+                f"ls -la {self.remote_home_dir}/anaconda3/bin/conda",
+                f"ls -la {self.remote_home_dir}/miniconda3/bin/conda"
             ]
             
             for cmd in conda_check_commands:
@@ -81,10 +187,10 @@ class RemoteMultiOmicsImputationService:
             if env_info["conda_installed"]:
                 conda_env_commands = [
                     "bash -l -c 'conda env list'",
-                    "bash -l -c 'source /home/humandeep/anaconda3/bin/activate && conda env list'",
-                    "bash -l -c 'source /home/humandeep/miniconda3/bin/activate && conda env list'",
-                    "/home/humandeep/anaconda3/bin/conda env list",
-                    "/home/humandeep/miniconda3/bin/conda env list"
+                    f"bash -l -c 'source {self.remote_home_dir}/anaconda3/bin/activate && conda env list'",
+                    f"bash -l -c 'source {self.remote_home_dir}/miniconda3/bin/activate && conda env list'",
+                    f"{self.remote_home_dir}/anaconda3/bin/conda env list",
+                    f"{self.remote_home_dir}/miniconda3/bin/conda env list"
                 ]
                 
                 for cmd in conda_env_commands:
@@ -102,13 +208,13 @@ class RemoteMultiOmicsImputationService:
             
             # 여러 Python 경로 확인
             python_paths = [
-                "/home/humandeep/anaconda3/envs/mochi/bin/python",
-                "/home/humandeep/anaconda3/envs/torch/bin/python",
-                "/home/humandeep/anaconda3/envs/pytorch/bin/python",
-                "/home/humandeep/anaconda3/bin/python",
-                "/home/humandeep/miniconda3/envs/mochi/bin/python",
-                "/home/humandeep/miniconda3/bin/python",
-                "/home/humandeep/venv/bin/python",
+                f"{self.remote_home_dir}/anaconda3/envs/mochi/bin/python",
+                f"{self.remote_home_dir}/anaconda3/envs/torch/bin/python",
+                f"{self.remote_home_dir}/anaconda3/envs/pytorch/bin/python",
+                f"{self.remote_home_dir}/anaconda3/bin/python",
+                f"{self.remote_home_dir}/miniconda3/envs/mochi/bin/python",
+                f"{self.remote_home_dir}/miniconda3/bin/python",
+                f"{self.remote_home_dir}/venv/bin/python",
                 "/usr/local/bin/python3",
                 "/usr/bin/python3",
                 "/usr/bin/python"
@@ -182,6 +288,7 @@ class RemoteMultiOmicsImputationService:
         """
         try:
             ssh = self.ml_client._connect_via_jump_server()
+            self._initialize_remote_paths(ssh)
             sftp = ssh.open_sftp()
             
             # 원격 디렉토리 생성
@@ -240,9 +347,11 @@ class RemoteMultiOmicsImputationService:
         """
         try:
             ssh = self.ml_client._connect_via_jump_server()
+            self._initialize_remote_paths(ssh)
             
             # 보간 스크립트가 없으면 생성
             self._create_imputation_script(ssh)
+            resolved_checkpoint = self._resolve_remote_model_checkpoint(ssh)
             
             # 원격 서버에서 보간 실행
             # 먼저 사용 가능한 Python 환경을 찾기
@@ -250,10 +359,13 @@ class RemoteMultiOmicsImputationService:
             
             # 여러 가능한 Python 경로 시도
             python_paths = [
-                "/home/humandeep/anaconda3/envs/mochi/bin/python",
-                "/home/humandeep/anaconda3/bin/python",
-                "/home/humandeep/miniconda3/envs/mochi/bin/python",
-                "/home/humandeep/venv/bin/python",
+                f"{self.remote_home_dir}/anaconda3/envs/mochi/bin/python",
+                f"{self.remote_home_dir}/anaconda3/envs/torch/bin/python",
+                f"{self.remote_home_dir}/anaconda3/envs/pytorch/bin/python",
+                f"{self.remote_home_dir}/anaconda3/bin/python",
+                f"{self.remote_home_dir}/miniconda3/envs/mochi/bin/python",
+                f"{self.remote_home_dir}/miniconda3/bin/python",
+                f"{self.remote_home_dir}/venv/bin/python",
                 "python3",
                 "python"
             ]
@@ -277,9 +389,9 @@ class RemoteMultiOmicsImputationService:
             if not python_cmd:
                 logger.info("Trying conda environment activation...")
                 conda_activations = [
-                    "source /home/humandeep/anaconda3/etc/profile.d/conda.sh && conda activate mochi",
-                    "source /home/humandeep/miniconda3/etc/profile.d/conda.sh && conda activate mochi",
-                    "source /home/humandeep/anaconda3/bin/activate && conda activate mochi",
+                    f"source {self.remote_home_dir}/anaconda3/etc/profile.d/conda.sh && conda activate mochi",
+                    f"source {self.remote_home_dir}/miniconda3/etc/profile.d/conda.sh && conda activate mochi",
+                    f"source {self.remote_home_dir}/anaconda3/bin/activate && conda activate mochi",
                     "source ~/.bashrc && conda activate mochi",
                 ]
                 
@@ -300,12 +412,12 @@ class RemoteMultiOmicsImputationService:
             
             # 명령어 생성 (bash login shell 사용)
             script_cmd = (
-                f"cd /home/humandeep/nmf/mochi_code && "
+                f"cd {Path(self.remote_script_path).parent} && "
                 f"{python_cmd} impute_multiomics.py "
                 f"--project_id {project_id} "
                 f"--data_dir {self.remote_data_dir} "
                 f"--job_id {job_id} "
-                f"--checkpoint {self.remote_model_path}"
+                f"--checkpoint {shlex.quote(resolved_checkpoint)}"
             )
             
             if activation_cmd:
@@ -367,6 +479,7 @@ class RemoteMultiOmicsImputationService:
         """
         try:
             ssh = self.ml_client._connect_via_jump_server()
+            self._initialize_remote_paths(ssh)
             sftp = ssh.open_sftp()
             
             # 로컬 출력 디렉토리 생성
@@ -428,7 +541,7 @@ from pathlib import Path
 import logging
 
 # MOCHI 모델 import
-sys.path.append("/home/humandeep/nmf/mochi_code")
+sys.path.append("__MOCHI_CODE_DIR__")
 from models import Generator
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -622,6 +735,7 @@ def main():
 if __name__ == "__main__":
     main()
 '''
+        script_content = script_content.replace("__MOCHI_CODE_DIR__", str(Path(self.remote_script_path).parent))
         
         try:
             sftp = ssh.open_sftp()

@@ -125,10 +125,11 @@ async def download_validation_report(project_id: int):
     """
     검증 결과 보고서 다운로드
 
-    프로젝트의 검증 결과를 TSV 형식의 보고서로 다운로드합니다.
+    프로젝트의 검증 결과를 PDF 형식의 보고서로 다운로드합니다.
     """
     from fastapi.responses import FileResponse
     import tempfile
+    import subprocess
 
     try:
         # 해당 프로젝트의 가장 최근 완료된 검증 작업 찾기
@@ -185,18 +186,31 @@ async def download_validation_report(project_id: int):
         report_lines.append("보고서 끝")
         report_lines.append("=" * 80)
 
-        # 임시 파일에 보고서 작성
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as temp_file:
-            temp_file.write("\n".join(report_lines))
-            temp_path = temp_file.name
+        # UTF-8 텍스트를 PDF로 변환 (macOS cupsfilter 사용)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as txt_file:
+            txt_file.write("\n".join(report_lines))
+            txt_path = txt_file.name
+
+        pdf_bytes = subprocess.run(
+            ["cupsfilter", "-m", "application/pdf", txt_path],
+            check=True,
+            capture_output=True,
+        ).stdout
+
+        if not pdf_bytes:
+            raise RuntimeError("cupsfilter returned empty PDF output")
+
+        with tempfile.NamedTemporaryFile(mode="wb", suffix=".pdf", delete=False) as pdf_file:
+            pdf_file.write(pdf_bytes)
+            temp_path = pdf_file.name
 
         # 파일 다운로드 응답
         return FileResponse(
             path=temp_path,
-            filename=f"validation_report_project_{project_id}.txt",
-            media_type="text/plain",
+            filename=f"validation_report_project_{project_id}.pdf",
+            media_type="application/pdf",
             headers={
-                "Content-Disposition": f"attachment; filename=validation_report_project_{project_id}.txt"
+                "Content-Disposition": f"attachment; filename=validation_report_project_{project_id}.pdf"
             }
         )
 
