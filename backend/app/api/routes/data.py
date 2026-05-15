@@ -11,6 +11,7 @@ import os
 from app.models.schemas import DataFile, DataFileCreate
 from app.models.base import DataFile as DataFileModel
 from app.db.session import get_db
+from app.services.validation_service import _infer_data_type
 
 router = APIRouter()
 
@@ -21,6 +22,7 @@ def datafile_to_dict(datafile: DataFileModel) -> dict:
         "id": datafile.id,
         "name": datafile.name,
         "size": datafile.size,
+        "dataType": datafile.data_type,
         "createdAt": datafile.created_at.strftime("%Y-%m-%d") if datafile.created_at else None,
     }
 
@@ -75,12 +77,14 @@ async def upload_data_file(
         with open(file_path, "wb") as f:
             f.write(content)
 
-        # DB에 파일 정보 저장
+        # DB에 파일 정보 저장 (dataType 자동 추론)
+        inferred_type = _infer_data_type(safe_filename)
         db_file = DataFileModel(
             project_id=project_id or 1,
             name=safe_filename,
             size=size_str,
-            file_path=str(file_path),  # 실제 파일 경로 저장
+            file_path=str(file_path),
+            data_type=inferred_type if inferred_type != "unknown" else None,
         )
 
         db.add(db_file)

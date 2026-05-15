@@ -25,3 +25,6 @@ SQLAlchemy>=2.0
 
 # SSH client for remote ML model access
 paramiko>=3.4.0
+
+# PDF report generation (cross-platform replacement for macOS cupsfilter)
+reportlab>=4.0.0

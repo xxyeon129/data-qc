@@ -21,6 +21,17 @@ router = APIRouter()
 imputation_service = ImputationService()
 ml_client = MLModelClient()
 
+
+def _resolve_imputed_file_path(job_id: str, omics_type: str) -> Optional[Path]:
+    """imputation_jobs 메모리 + 결과 디렉토리 모두 탐색"""
+    job = imputation_jobs.get(job_id) or {}
+    output_files = job.get("results", {}).get("output_files", {})
+    if isinstance(output_files, dict):
+        path = output_files.get(omics_type)
+        if path:
+            return Path(path)
+    return None
+
 # 멀티오믹스 서비스 (싱글톤)
 multiomics_service = None
 multiomics_service_init_error = None
@@ -38,51 +49,31 @@ def get_multiomics_service():
             multiomics_service = None
     return multiomics_service
 
-# Mock imputation methods
-MOCK_IMPUTATION_METHODS = [
+# 실제 동작 가능한 보간 방법만 노출 (mock 항목 제거)
+AVAILABLE_IMPUTATION_METHODS = [
     {
         "value": "mochi",
-        "label": "🚀 MOCHI: Imputation Model (추천)",
-        "description": "멀티오믹스 데이터의 특성을 고려한 최신 AI 기반 보간 모델입니다.",
-        "accuracy": "~97.3%"
+        "label": "MOCHI: Multi-Omics AI Imputation (원격)",
+        "description": "멀티오믹스(RNA·Protein·Methyl) 데이터를 원격 GPU 서버의 MOCHI tri-joint 모델로 보간합니다.",
+        "accuracy": "~97.3%",
     },
     {
         "value": "mean",
-        "label": "Mean/Median Imputation",
-        "description": "가장 간단한 통계적 방법으로, 각 변수의 평균 또는 중앙값으로 결측치를 대체합니다.",
-        "accuracy": "~75%"
+        "label": "Mean / Median Imputation",
+        "description": "각 변수의 평균 또는 중앙값으로 결측치를 대체합니다 (sklearn SimpleImputer).",
+        "accuracy": "~75%",
     },
     {
         "value": "knn",
         "label": "KNN (K-Nearest Neighbors) Imputation",
-        "description": "유사한 샘플들의 값을 기반으로 결측치를 추정합니다.",
-        "accuracy": "~88%"
-    },
-    # TODO: MICE는 대용량 데이터(특성 수 > 10,000)에 대해 계산 시간이 매우 오래 걸림 (수 시간)
-    # 추후 샘플링 또는 PCA 기반 차원 축소 등의 최적화 필요
-    # {
-    #     "value": "mice",
-    #     "label": "MICE (Multiple Imputation by Chained Equations)",
-    #     "description": "다중 대체 방법으로 여러 개의 완전한 데이터셋을 생성합니다.",
-    #     "accuracy": "~92%"
-    # },
-    {
-        "value": "missforest",
-        "label": "MissForest",
-        "description": "Random Forest 알고리즘을 사용한 비모수적 보간 방법입니다.",
-        "accuracy": "~91%"
+        "description": "유사한 샘플들의 값을 기반으로 결측치를 추정합니다 (sklearn KNNImputer).",
+        "accuracy": "~88%",
     },
     {
-        "value": "gain",
-        "label": "GAIN (Generative Adversarial Imputation)",
-        "description": "GAN 기반의 생성 모델로 결측치를 보간합니다.",
-        "accuracy": "~94%"
-    },
-    {
-        "value": "vae",
-        "label": "VAE (Variational Autoencoder)",
-        "description": "딥러닝 기반의 생성 모델로, 데이터의 잠재 표현을 학습하여 결측치를 추정합니다.",
-        "accuracy": "~93%"
+        "value": "mice",
+        "label": "MICE (Iterative Imputer)",
+        "description": "각 변수를 다른 변수들의 함수로 반복 학습합니다 (sklearn IterativeImputer). 대용량 데이터는 자동으로 반복수가 축소됩니다.",
+        "accuracy": "~92%",
     },
 ]
 
@@ -93,18 +84,45 @@ imputation_jobs = {}
 @router.get("/methods", response_model=List[ImputationMethod])
 async def get_imputation_methods():
     """사용 가능한 보간 방법 목록 조회"""
-    return MOCK_IMPUTATION_METHODS
+    return AVAILABLE_IMPUTATION_METHODS
 
 
 @router.post("/execute", response_model=ImputationResponse)
 async def execute_imputation(
     request: ImputationRequest,
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
 ):
-    """결측치 보간 실행"""
+    """
+    결측치 보간 실행
+
+    method == "mochi" 요청은 자동으로 멀티오믹스 원격 보간 경로로 라우팅됩니다.
+    """
     job_id = str(uuid.uuid4())
-    
-    # 백그라운드 작업으로 보간 실행
+
+    if request.method == "mochi":
+        # MOCHI는 원격 AI 서버 경로로 자동 라우팅
+        background_tasks.add_task(
+            _run_multiomics_imputation,
+            job_id=job_id,
+            project_id=request.project_id,
+            threshold=request.threshold,
+            quality_threshold=request.quality_threshold,
+        )
+        imputation_jobs[job_id] = {
+            "status": "processing",
+            "created_at": datetime.now().isoformat(),
+            "project_id": request.project_id,
+            "method": "mochi_multiomics",
+            "threshold": request.threshold,
+            "quality_threshold": request.quality_threshold,
+        }
+        return ImputationResponse(
+            jobId=job_id,
+            status="processing",
+            message="MOCHI multi-omics imputation job started (remote SSH)",
+            estimatedTime=300,
+        )
+
     background_tasks.add_task(
         imputation_service.run_imputation,
         job_id=job_id,
@@ -112,20 +130,20 @@ async def execute_imputation(
         method=request.method,
         threshold=request.threshold,
         quality_threshold=request.quality_threshold,
-        options=request.options or {}
+        options=request.options or {},
     )
-    
+
     imputation_jobs[job_id] = {
         "status": "processing",
         "created_at": datetime.now().isoformat(),
-        "request": request.model_dump()
+        "request": request.model_dump(),
     }
-    
+
     return ImputationResponse(
         jobId=job_id,
         status="processing",
         message="Imputation job started",
-        estimatedTime=300  # 5분 예상
+        estimatedTime=300,
     )
 
 

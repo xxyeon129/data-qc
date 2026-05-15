@@ -51,6 +51,12 @@ def _compute_total_size(data_files) -> str:
 
 def project_to_dict(project: ProjectModel) -> dict:
     """SQLAlchemy 모델을 딕셔너리로 변환"""
+    # 5종 dataType 신규 컬럼 우선, 없으면 옛 컬럼으로 폴백
+    genomics_score = project.genomics_quality_score or project.dna_quality_score
+    transcriptomics_score = project.transcriptomics_quality_score or project.rna_quality_score
+    proteomics_score = project.proteomics_quality_score or project.protein_quality_score
+    metabolomics_score = project.metabolomics_quality_score or project.methyl_quality_score
+
     return {
         "id": project.id,
         "name": project.name,
@@ -61,10 +67,17 @@ def project_to_dict(project: ProjectModel) -> dict:
         "description": project.description,
         "sampleCount": project.sample_count,
         "status": project.status,
-        "DNA_qualityScore": project.dna_quality_score,
-        "RNA_qualityScore": project.rna_quality_score,
-        "Methyl_qualityScore": project.methyl_quality_score,
-        "Protein_qualityScore": project.protein_quality_score,
+        # 명세서 §3 dataType 5종 (신규)
+        "genomics_qualityScore": genomics_score,
+        "transcriptomics_qualityScore": transcriptomics_score,
+        "proteomics_qualityScore": proteomics_score,
+        "metabolomics_qualityScore": metabolomics_score,
+        "metadata_qualityScore": project.metadata_quality_score,
+        # 옛 라벨 (프론트엔드 하위 호환)
+        "DNA_qualityScore": genomics_score,
+        "RNA_qualityScore": transcriptomics_score,
+        "Protein_qualityScore": proteomics_score,
+        "Methyl_qualityScore": metabolomics_score,
         "sample_accuracy": project.sample_accuracy,
         "createdAt": project.created_at.strftime("%Y-%m-%d") if project.created_at else None,
         "totalSize": _compute_total_size(project.data_files),

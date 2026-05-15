@@ -1,6 +1,15 @@
 """
 GENE-QC Validation Service
 OMOP CDM DQM 기반 28개 품질 지표 구현
+
+TODO: 추후 개발 예정
+    현재 이 모듈은 HTTP 검증 엔드포인트(POST /api/validation/execute)에 연동되어 있지 않습니다.
+    실제 API 동작은 validation.py 라우트 내부의 _evaluate_gene_qc_rules 함수(13개 규칙)로 수행됩니다.
+    향후 아래 항목의 구현 및 라우트 연동이 필요합니다.
+      - advanced 레벨 크로스 검증 6개 규칙 (comp_X*, plau_X*, conf_X*)
+      - basic 레벨 미구현 규칙: comp_C004, plau_V001, plau_V002, plau_V003,
+        plau_T001, plau_T002, conf_C004, conf_V001, conf_V002
+      - ValidationService 클래스를 validation.py 라우트에서 import하여 사용하도록 통합
 """
 
 from __future__ import annotations
@@ -830,16 +839,24 @@ def _detect_delimiter(content: str) -> str:
 
 
 def _infer_data_type(filename: str) -> str:
+    """
+    명세서 §6.4 — 파일명 기반 dataType 자동 추론
+    반환값은 명세서 §3 의 5종: genomics, transcriptomics, proteomics, metabolomics, metadata
+    """
     lower = filename.lower()
-    if any(k in lower for k in ("rna", "transcriptom", "expression")):
+    # 메타데이터 우선 매칭 (clinical/phenotype 등이 다른 키워드보다 먼저 잡혀야 함)
+    if any(k in lower for k in ("clinical", "phenotype", "sample_info", "sampleinfo")):
+        return "metadata"
+    if any(k in lower for k in ("rna", "transcriptom", "expression", "mrna")):
         return "transcriptomics"
-    if any(k in lower for k in ("dna", "methylat", "snp", "genomic", "genome")):
+    if any(k in lower for k in ("dna", "methylat", "methyl", "snp", "genomic", "genome", "vcf")):
         return "genomics"
-    if any(k in lower for k in ("protein", "proteom")):
+    if any(k in lower for k in ("protein", "proteom", "prot")):
         return "proteomics"
     if "metabol" in lower:
         return "metabolomics"
-    if any(k in lower for k in ("meta", "clinical", "phenotype", "sample_info")):
+    # 'meta' 부분 매칭은 마지막에 (다른 키워드 우선)
+    if "meta" in lower:
         return "metadata"
     return "unknown"
 

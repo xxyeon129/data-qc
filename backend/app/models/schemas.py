@@ -124,12 +124,41 @@ class VerificationStatus(BaseModel):
 
 
 class VerificationRule(BaseModel):
-    label: str
-    status: Literal["active", "inactive"]
-    category: Literal["정렬성", "정밀성", "완전성"]
-    metric: str
-    condition: Literal[">=", "<="]
-    threshold: int
+    """
+    GENE-QC 지표설계 명세서 v2.0 §5 기준 검증 규칙 스키마
+
+    신규(명세서) 필드와 옛 필드(label/category/metric/condition/threshold)를
+    모두 받아 처리할 수 있도록 모두 Optional 로 정의합니다.
+    응답에는 두 체계의 필드를 함께 반환합니다.
+    """
+    # 명세서 §5.3 — 내부 지표 ID
+    metric_id: Optional[str] = Field(None, alias="metricId")
+    # 명세서 §5.1 — 확정 필드
+    name: Optional[str] = None
+    dimension: Optional[Literal["Completeness", "Plausibility", "Conformance"]] = None
+    quality_level: Optional[Literal["basic", "advanced"]] = Field(None, alias="qualityLevel")
+    severity: Optional[Literal["fatal", "error", "warning", "convention", "characterization"]] = None
+    description: Optional[str] = None
+    data_types: Optional[List[str]] = Field(None, alias="dataTypes")
+    # 명세서 §5.2 — 검증 수행 필드
+    validation_type: Optional[str] = Field(None, alias="validationType")
+    parameters: Optional[dict] = None
+    # 명세서 §5.3 — OMOP 추적 필드
+    metric_level: Optional[Literal["FILE", "COLUMN", "VALUE"]] = Field(None, alias="metricLevel")
+    context: Optional[Literal["Verification", "Validation"]] = None
+    is_custom: Optional[bool] = Field(False, alias="isCustom")
+    enabled: Optional[bool] = True
+
+    # 옛 필드 (프론트엔드 하위 호환)
+    label: Optional[str] = None
+    status: Optional[Literal["active", "inactive"]] = "active"
+    category: Optional[str] = None
+    metric: Optional[str] = None
+    condition: Optional[str] = None
+    threshold: Optional[float] = None
+
+    class Config:
+        populate_by_name = True
 
 
 # Imputation Models

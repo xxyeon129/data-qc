@@ -524,11 +524,17 @@ class RemoteMultiOmicsImputationService:
     def _create_imputation_script(self, ssh):
         """
         원격 서버에 보간 실행 스크립트 생성 (없는 경우)
+
+        스크립트는 입력 데이터의 실제 shape 를 사용하여 MOCHI Generator 를 초기화하며,
+        checkpoint 의 차원과 불일치하면 명확히 에러로 실패합니다(기존 하드코딩 제거).
         """
         script_content = '''#!/usr/bin/env python3
 """
 Multi-Omics Imputation Script for Remote Execution
 원격 서버에서 MOCHI 모델을 사용하여 멀티오믹스 보간 수행
+
+차원(dim_rna/dim_protein/dim_methyl) 은 입력 파일에서 동적으로 결정합니다.
+checkpoint 의 가중치 차원과 일치하지 않으면 RuntimeError 로 즉시 실패합니다.
 """
 
 import sys
@@ -540,7 +546,6 @@ import pandas as pd
 from pathlib import Path
 import logging
 
-# MOCHI 모델 import
 sys.path.append("__MOCHI_CODE_DIR__")
 from models import Generator
 
@@ -548,74 +553,74 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
-def load_model(checkpoint_path, device):
-    """MOCHI 모델 로드"""
+def _build_generator(input_size, output_size, target_type, device):
+    return Generator(
+        input_size=input_size,
+        output_size=output_size,
+        use_attn=True, n_heads=4, d_head=64,
+        target_type=target_type,
+        src_size=input_size,
+    ).to(device)
+
+
+def load_model(checkpoint_path, dim_rna, dim_protein, dim_methyl, device):
+    """MOCHI 모델 로드 (차원은 데이터로부터 주입)"""
     logger.info(f"Loading model from {checkpoint_path}")
+    logger.info(f"Dimensions: rna={dim_rna}, protein={dim_protein}, methyl={dim_methyl}")
     ckpt = torch.load(checkpoint_path, map_location=device)
-    
-    dim_rna = 60660
-    dim_protein = 487
-    dim_methyl = 10000
-    
-    # Generators
-    Gp = Generator(
-        input_size=dim_rna + dim_methyl,
-        output_size=dim_protein,
-        use_attn=True, n_heads=4, d_head=64,
-        target_type="protein",
-        src_size=dim_rna + dim_methyl
-    ).to(device)
-    Gp.load_state_dict(ckpt['Gp'])
-    Gp.eval()
-    
-    Gr = Generator(
-        input_size=dim_protein + dim_methyl,
-        output_size=dim_rna,
-        use_attn=True, n_heads=4, d_head=64,
-        target_type="rna",
-        src_size=dim_protein + dim_methyl
-    ).to(device)
-    Gr.load_state_dict(ckpt['Gr'])
-    Gr.eval()
-    
-    Gm = Generator(
-        input_size=dim_rna + dim_protein,
-        output_size=dim_methyl,
-        use_attn=True, n_heads=4, d_head=64,
-        target_type="methyl",
-        src_size=dim_rna + dim_protein
-    ).to(device)
-    Gm.load_state_dict(ckpt['Gm'])
-    Gm.eval()
-    
+
+    Gp = _build_generator(dim_rna + dim_methyl, dim_protein, "protein", device)
+    Gr = _build_generator(dim_protein + dim_methyl, dim_rna, "rna", device)
+    Gm = _build_generator(dim_rna + dim_protein, dim_methyl, "methyl", device)
+
+    try:
+        Gp.load_state_dict(ckpt["Gp"])
+        Gr.load_state_dict(ckpt["Gr"])
+        Gm.load_state_dict(ckpt["Gm"])
+    except RuntimeError as e:
+        raise RuntimeError(
+            f"Checkpoint dimension mismatch — input data shape "
+            f"(rna={dim_rna}, protein={dim_protein}, methyl={dim_methyl}) "
+            f"is incompatible with the trained MOCHI weights. {e}"
+        )
+
+    Gp.eval(); Gr.eval(); Gm.eval()
     logger.info("Model loaded successfully")
     return Gp, Gr, Gm
 
 
 def load_data(project_dir):
-    """데이터 로드"""
+    """데이터 로드 — TSV / CSV 모두 지원, 파일명 키워드로 RNA/Protein/Methyl 분류"""
     raw_dir = project_dir / "raw"
-    files = list(raw_dir.glob("*.tsv"))
-    
+    files = list(raw_dir.glob("*.tsv")) + list(raw_dir.glob("*.csv"))
+
+    def _read(path):
+        delim = "\\t" if path.suffix.lower() == ".tsv" else ","
+        return pd.read_csv(path, sep=delim, index_col=0)
+
     rna_file = protein_file = methyl_file = None
     for f in files:
         name = f.name.lower()
-        if 'rna' in name:
+        if any(k in name for k in ("rna", "transcriptom", "expression")):
             rna_file = f
-        elif 'protein' in name:
+        elif any(k in name for k in ("protein", "proteom")):
             protein_file = f
-        elif 'methy' in name:
+        elif any(k in name for k in ("methy", "dna", "genomic")):
             methyl_file = f
-    
+
+    if not (rna_file and protein_file and methyl_file):
+        raise RuntimeError(
+            f"MOCHI requires three omics files (rna/protein/methyl). "
+            f"Found: rna={rna_file}, protein={protein_file}, methyl={methyl_file}"
+        )
+
     logger.info(f"Loading RNA from {rna_file}")
-    rna_df = pd.read_csv(rna_file, sep="\\t", index_col=0)
-    
+    rna_df = _read(rna_file)
     logger.info(f"Loading Protein from {protein_file}")
-    protein_df = pd.read_csv(protein_file, sep="\\t", index_col=0)
-    
+    protein_df = _read(protein_file)
     logger.info(f"Loading Methyl from {methyl_file}")
-    methyl_df = pd.read_csv(methyl_file, sep="\\t", index_col=0)
-    
+    methyl_df = _read(methyl_file)
+
     return rna_df, protein_df, methyl_df
 
 
@@ -694,16 +699,22 @@ def main():
     parser.add_argument('--job_id', type=str, required=True)
     parser.add_argument('--checkpoint', type=str, required=True)
     args = parser.parse_args()
-    
+
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
-    
-    # 모델 로드
-    Gp, Gr, Gm = load_model(args.checkpoint, device)
-    
-    # 데이터 로드
+
+    # 데이터 로드 (모델보다 먼저 — 차원 결정 필요)
     project_dir = Path(args.data_dir) / f"project_{args.project_id}"
     rna_df, protein_df, methyl_df = load_data(project_dir)
+
+    # 입력 데이터에서 차원 동적 추출 (행=feature, 열=sample 가정)
+    dim_rna = rna_df.shape[0]
+    dim_protein = protein_df.shape[0]
+    dim_methyl = methyl_df.shape[0]
+
+    Gp, Gr, Gm = load_model(
+        args.checkpoint, dim_rna, dim_protein, dim_methyl, device,
+    )
     
     # 보간 수행
     logger.info("Starting imputation...")

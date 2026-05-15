@@ -4,7 +4,6 @@
 
 import { useState } from "react";
 import * as S from "./managementPage.styles";
-import { DataAnalysis } from "./components/DataAnalysis";
 import { ImputationStrategy } from "./components/ImputationStrategy";
 import { PreviewResults } from "./components/PreviewResults";
 
@@ -44,7 +43,6 @@ export const ManagementPage = () => {
         </S.Alert>
 
         <S.ImputationContainer>
-          {/* <DataAnalysis /> */}
           <ImputationStrategy
             onImputationComplete={setImputationResult}
             onExecutionStart={() => setIsExecuting(true)}
