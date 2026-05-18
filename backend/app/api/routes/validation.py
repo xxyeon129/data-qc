@@ -28,6 +28,11 @@ from app.db.session import SessionLocal, get_db
 from app.models.base import DataFile as DataFileModel
 from app.models.base import Project as ProjectModel
 from app.models.base import ValidationJob
+from app.services.project_storage import (
+    ProjectDataNotFoundError,
+    ensure_project_raw_dir,
+    validate_ai_validation_prerequisites,
+)
 from app.services.validation_service import (
     METRIC_METADATA,
     _infer_data_type,
@@ -224,9 +229,7 @@ def _run_validation_task(
             logger.error(f"[Job {job_id}] ValidationJob row not found")
             return
 
-        project_dir = UPLOADS_DIR / f"project_{project_id}" / "raw"
-        if not project_dir.exists():
-            raise FileNotFoundError(f"Project directory not found: {project_dir}")
+        project_dir = ensure_project_raw_dir(project_id, db)
 
         # 파일별 dataType 매핑
         file_data_types = _file_data_types_for_project(db, project_id)
@@ -385,7 +388,7 @@ def _run_ai_validation_task(job_id: str, project_id: int, min_correlation: float
             logger.error(f"[Job {job_id}] ValidationJob row not found (AI)")
             return
 
-        project_dir = UPLOADS_DIR / f"project_{project_id}" / "raw"
+        project_dir = validate_ai_validation_prerequisites(project_id, db)
 
         # ── 1. 원격 AI 일관성 검증 (Plausibility) ──────────────────────────
         local_data_dir = UPLOADS_DIR
@@ -488,6 +491,11 @@ async def execute_validation(
     if not project:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
 
+    try:
+        ensure_project_raw_dir(project_id, db)
+    except ProjectDataNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     enabled_metrics: Optional[List[str]] = None
     params_overrides: Optional[Dict[str, Dict[str, Any]]] = None
     if payload:
@@ -548,6 +556,11 @@ async def execute_ai_validation(
     project = db.query(ProjectModel).filter(ProjectModel.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+
+    try:
+        validate_ai_validation_prerequisites(project_id, db)
+    except ProjectDataNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     min_corr = payload.min_correlation if payload else 0.3
 

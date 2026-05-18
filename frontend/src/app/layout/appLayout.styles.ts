@@ -9,61 +9,89 @@ export const Layout = styled.div`
 
 export const Navbar = styled.nav`
   background: white;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  border-bottom: 1px solid ${({ theme }) => theme.colors.border.gray};
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
   z-index: 1000;
-  height: 60px;
+  height: 64px;
   display: flex;
   align-items: center;
-  padding: 0 24px;
+  padding: 0 32px;
+  gap: 48px;
 `;
 
-export const Logo = styled.div`
-  font-size: 24px;
+export const LogoSection = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+`;
+
+export const LogoTitle = styled.div`
+  font-size: 20px;
   font-weight: 700;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  margin-right: 48px;
+  color: ${({ theme }) => theme.colors.blue.primary};
+  letter-spacing: -0.02em;
+`;
+
+export const LogoDivider = styled.div`
+  width: 1px;
+  height: 32px;
+  background: ${({ theme }) => theme.colors.text.lightGray};
+`;
+
+export const LogoSubtext = styled.div`
+  display: flex;
+  flex-direction: column;
+  font-size: 11px;
+  line-height: 1.35;
+  color: ${({ theme }) => theme.colors.text.lightGray};
+  font-weight: 400;
 `;
 
 export const NavMenu = styled.div`
   display: flex;
-  gap: 8px;
+  align-items: center;
+  gap: 4px;
   flex: 1;
 `;
 
 export const NavItem = styled.button<{ $active: boolean }>`
-  padding: 8px 20px;
-  background: ${({ $active }) =>
-    $active
-      ? "linear-gradient(135deg, #667eea 0%, #764ba2 100%)"
-      : "transparent"};
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: ${({ $active, theme }) =>
+    $active ? theme.colors.blue.primary : "transparent"};
   border: none;
-  border-radius: 8px;
+  border-radius: 9999px;
   font-size: 14px;
   font-weight: 500;
-  color: ${({ $active }) => ($active ? "white" : "#64748b")};
+  color: ${({ $active, theme }) =>
+    $active ? "white" : theme.colors.text.darkGray};
   cursor: pointer;
-  transition: all 0.2s;
-  position: relative;
+  transition: background 0.2s, color 0.2s;
+  white-space: nowrap;
+
+  svg {
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+  }
 
   &:hover {
-    background: ${({ $active }) =>
-      $active
-        ? "linear-gradient(135deg, #667eea 0%, #764ba2 100%)"
-        : "#f1f5f9"};
-    color: ${({ $active }) => ($active ? "white" : "#1e293b")};
+    background: ${({ $active, theme }) =>
+      $active ? theme.colors.blue.primary : "#f3f4f6"};
+    color: ${({ $active, theme }) =>
+      $active ? "white" : theme.colors.text.default};
   }
 `;
 
 export const Main = styled.main`
-  margin-top: 60px;
-  min-height: calc(100vh - 60px);
+  margin-top: 64px;
+  min-height: calc(100vh - 64px);
   background: #f0f2f5;
   padding: 24px;
 `;

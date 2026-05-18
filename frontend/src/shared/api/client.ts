@@ -43,7 +43,12 @@ class ApiClient {
     this.client.interceptors.response.use(
       (response: AxiosResponse) => response.data,
       (error: AxiosError) => {
-        const message = (error.response?.data as { message?: string })?.message || error.message || "API request failed";
+        const data = error.response?.data as { message?: string; detail?: string };
+        const message =
+          data?.message ||
+          (typeof data?.detail === "string" ? data.detail : undefined) ||
+          error.message ||
+          "API request failed";
 
         console.error(`API response failed: ${error.config?.url ?? "unknown endpoint"}`, error);
 

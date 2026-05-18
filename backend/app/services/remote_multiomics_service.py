@@ -308,13 +308,15 @@ class RemoteMultiOmicsImputationService:
             if not local_project_dir.exists():
                 return False, f"Local project directory not found: {local_project_dir}"
             
-            # TSV 파일들 업로드
-            tsv_files = list(local_project_dir.glob("*.tsv"))
-            if not tsv_files:
-                return False, f"No TSV files found in {local_project_dir}"
-            
+            # TSV/CSV 파일들 업로드 (methylation 등 CSV 포함)
+            data_files = list(local_project_dir.glob("*.tsv")) + list(
+                local_project_dir.glob("*.csv")
+            )
+            if not data_files:
+                return False, f"No TSV/CSV files found in {local_project_dir}"
+
             uploaded_files = []
-            for local_file in tsv_files:
+            for local_file in data_files:
                 remote_file = f"{remote_raw_dir}/{local_file.name}"
                 logger.info(f"Uploading {local_file.name}...")
                 sftp.put(str(local_file), remote_file)

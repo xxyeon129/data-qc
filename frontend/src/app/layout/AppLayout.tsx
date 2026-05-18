@@ -1,22 +1,55 @@
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
+import type { IconType } from "react-icons";
+import {
+  FiHome,
+  FiShield,
+  FiCpu,
+  FiMessageSquare,
+  FiEye,
+  FiSliders,
+} from "react-icons/fi";
+import { PATH_URL } from "@/shared";
 import * as S from "./appLayout.styles";
+
+type NavItem = {
+  id: string;
+  label: string;
+  path: string;
+  icon: IconType;
+};
+
+const NAV_ITEMS: NavItem[] = [
+  { id: "dashboard", label: "Dashboard", path: PATH_URL.MAIN, icon: FiHome },
+  {
+    id: "analysis",
+    label: "Analysis",
+    path: PATH_URL.DATASET,
+    icon: FiMessageSquare,
+  },
+  { id: "rules", label: "Rule", path: PATH_URL.RULES, icon: FiSliders },
+  {
+    id: "validation",
+    label: "Validation",
+    path: PATH_URL.VALIDATION,
+    icon: FiShield,
+  },
+  {
+    id: "imputation",
+    label: "Imputation",
+    path: PATH_URL.MANAGEMENT,
+    icon: FiCpu,
+  },
+  { id: "results", label: "Results", path: PATH_URL.RESULTS, icon: FiEye },
+  
+];
 
 export const AppLayout = () => {
   const location = useLocation();
   const navigate = useNavigate();
 
-  const navItems = [
-    { id: "main", label: "메인", path: "/" },
-    { id: "dataset", label: "데이터셋", path: "/dataset" },
-    { id: "rules", label: "검증규칙", path: "/rules" },
-    { id: "validation", label: "품질검증", path: "/validation" },
-    { id: "management", label: "품질관리", path: "/management" },
-    { id: "results", label: "검증결과", path: "/results" },
-  ];
-
   const isActive = (path: string) => {
-    if (path === "/") {
-      return location.pathname === "/";
+    if (path === PATH_URL.MAIN) {
+      return location.pathname === PATH_URL.MAIN;
     }
     return location.pathname.startsWith(path);
   };
@@ -24,17 +57,29 @@ export const AppLayout = () => {
   return (
     <S.Layout>
       <S.Navbar>
-        <S.Logo>DataQC</S.Logo>
+        <S.LogoSection>
+          <S.LogoTitle>GENE-QC</S.LogoTitle>
+          <S.LogoDivider />
+          <S.LogoSubtext>
+            <span>Genomic Data</span>
+            <span>Quality Control</span>
+          </S.LogoSubtext>
+        </S.LogoSection>
         <S.NavMenu>
-          {navItems.map((item) => (
-            <S.NavItem
-              key={item.id}
-              $active={isActive(item.path)}
-              onClick={() => navigate(item.path)}
-            >
-              {item.label}
-            </S.NavItem>
-          ))}
+          {NAV_ITEMS.map((item) => {
+            const Icon = item.icon;
+            const active = isActive(item.path);
+            return (
+              <S.NavItem
+                key={item.id}
+                $active={active}
+                onClick={() => navigate(item.path)}
+              >
+                <Icon />
+                {item.label}
+              </S.NavItem>
+            );
+          })}
         </S.NavMenu>
       </S.Navbar>
       <S.Main>
