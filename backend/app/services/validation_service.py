@@ -1,15 +1,6 @@
 """
 GENE-QC Validation Service
 OMOP CDM DQM 기반 28개 품질 지표 구현
-
-TODO: 추후 개발 예정
-    현재 이 모듈은 HTTP 검증 엔드포인트(POST /api/validation/execute)에 연동되어 있지 않습니다.
-    실제 API 동작은 validation.py 라우트 내부의 _evaluate_gene_qc_rules 함수(13개 규칙)로 수행됩니다.
-    향후 아래 항목의 구현 및 라우트 연동이 필요합니다.
-      - advanced 레벨 크로스 검증 6개 규칙 (comp_X*, plau_X*, conf_X*)
-      - basic 레벨 미구현 규칙: comp_C004, plau_V001, plau_V002, plau_V003,
-        plau_T001, plau_T002, conf_C004, conf_V001, conf_V002
-      - ValidationService 클래스를 validation.py 라우트에서 import하여 사용하도록 통합
 """
 
 from __future__ import annotations
@@ -675,12 +666,200 @@ def check_cross_metrics(
                 affected_items=inconsistent_files[:10],
             ))
 
-    # plau_X001 / plau_X002: AI 모듈 담당 (stub)
-    for mid in ["plau_X001", "plau_X002"]:
-        if mid in enabled_metrics:
-            results.append(_skip(mid, "[AI 모듈] 별도 구현 필요 — 개발팀장 요청 항목"))
+    # plau_X001: 메타데이터-오믹스 subtype 일관성
+    # 명세서 §2.5 + §4.2 cross_consistency — matchColumn/compareColumn 기반
+    if "plau_X001" in enabled_metrics:
+        results.append(
+            _check_plau_X001(file_infos, params_map.get("plau_X001", {}))
+        )
+
+    # plau_X002: 오믹스 간 발현 상관관계
+    # 명세서 §2.5 + §4.2 cross_correlation — targetDataTypes / minCorrelation / method
+    if "plau_X002" in enabled_metrics:
+        results.append(
+            _check_plau_X002(file_infos, params_map.get("plau_X002", {}))
+        )
 
     return results
+
+
+# ─── 심화 Plausibility 교차 지표 구현 ──────────────────────────────────────
+
+def _omics_sample_mean_series(df: pd.DataFrame) -> pd.Series:
+    """
+    오믹스 DataFrame(행=feature, 열=sample)에서 sample별 평균 발현치를 반환.
+    NaN은 평균 계산에서 제외하고, 비어 있는 sample은 NaN으로 남는다.
+    """
+    numeric = df.select_dtypes(include="number")
+    if numeric.empty:
+        # 첫 컬럼이 sample id로 들어와 모두 비수치로 잡혔을 가능성
+        numeric = df.iloc[:, 1:].apply(pd.to_numeric, errors="coerce")
+    return numeric.mean(axis=0, skipna=True)
+
+
+def _check_plau_X002(file_infos: list[dict], params: dict) -> dict:
+    """
+    오믹스 간 발현 상관관계 (plau_X002, 명세서 §4.2 cross_correlation).
+    targetDataTypes 에 지정된 두 오믹스의 공통 샘플에 대해 sample-level 평균
+    발현치를 Pearson 또는 Spearman 상관계수로 평가한다.
+    """
+    target_types = params.get("targetDataTypes") or ["transcriptomics", "proteomics"]
+    min_corr = float(params.get("minCorrelation", 0.3))
+    method = str(params.get("method", "pearson")).lower()
+    if method not in ("pearson", "spearman"):
+        method = "pearson"
+
+    candidates = [
+        info for info in file_infos
+        if info.get("data_type") in target_types and info.get("df") is not None
+    ]
+    if len(candidates) < 2:
+        return _skip(
+            "plau_X002",
+            f"targetDataTypes={target_types} 중 2개 이상의 오믹스 파일이 필요",
+        )
+
+    # 명세서가 두 dataType 비교를 가정하므로 dataType 단위로 묶음
+    by_type: dict[str, dict] = {}
+    for info in candidates:
+        by_type.setdefault(info["data_type"], info)  # 동일 dataType 다수면 첫 파일 사용
+
+    if len(by_type) < 2:
+        return _skip(
+            "plau_X002",
+            f"두 개의 서로 다른 dataType이 필요. 현재: {sorted(by_type.keys())}",
+        )
+
+    types_used = list(by_type.keys())[:2]
+    info_a, info_b = by_type[types_used[0]], by_type[types_used[1]]
+    sample_a = _omics_sample_mean_series(info_a["df"]).dropna()
+    sample_b = _omics_sample_mean_series(info_b["df"]).dropna()
+    common = sample_a.index.intersection(sample_b.index)
+    if len(common) < 3:
+        return _skip(
+            "plau_X002",
+            f"공통 샘플이 부족합니다 (n={len(common)}, 최소 3개 필요)",
+        )
+
+    vec_a = sample_a.loc[common]
+    vec_b = sample_b.loc[common]
+
+    # 분산이 0이면 상관관계 정의 불가
+    if vec_a.var(ddof=0) == 0 or vec_b.var(ddof=0) == 0:
+        return _skip(
+            "plau_X002",
+            "공통 샘플의 발현 분산이 0이라 상관관계를 계산할 수 없습니다",
+        )
+
+    if method == "spearman":
+        corr_value = float(vec_a.corr(vec_b, method="spearman"))
+    else:
+        corr_value = float(vec_a.corr(vec_b, method="pearson"))
+
+    if np.isnan(corr_value):
+        return _skip("plau_X002", "상관계수 계산 결과 NaN")
+
+    passed = abs(corr_value) >= min_corr
+    details = (
+        f"{method.title()} 상관계수 {corr_value:.3f} "
+        f"({types_used[0]}↔{types_used[1]}, 공통 샘플 {len(common)}개, 임계값: {min_corr})"
+    )
+    return _result(
+        "plau_X002",
+        passed,
+        round(corr_value, 4),
+        details,
+        filename=f"{info_a['filename']} ↔ {info_b['filename']}",
+        data_type="+".join(types_used),
+    )
+
+
+def _check_plau_X001(file_infos: list[dict], params: dict) -> dict:
+    """
+    메타데이터-오믹스 subtype 일관성 (plau_X001, 명세서 §4.2 cross_consistency).
+    메타데이터의 `compareColumn`(기본 subtype) 그룹 간 오믹스 sample-level
+    평균 발현이 유의하게 분리되는지를 일원 ANOVA F-statistic 으로 평가한다.
+    """
+    match_col = params.get("matchColumn", "sample_id")  # 현재 구현은 첫 컬럼=샘플ID 가정
+    compare_col_param = params.get("compareColumn", "subtype")
+    p_threshold = float(params.get("pValueThreshold", 0.05))
+    min_group_size = int(params.get("minGroupSize", 3))
+
+    meta_infos = [i for i in file_infos if i.get("data_type") == "metadata"]
+    omics_infos = [i for i in file_infos if i.get("data_type") in OMICS_TYPES]
+    if not meta_infos or not omics_infos:
+        return _skip("plau_X001", "메타데이터와 오믹스 파일이 모두 필요")
+
+    meta_df: pd.DataFrame = meta_infos[0]["df"]
+    if meta_df is None or meta_df.empty:
+        return _skip("plau_X001", "메타데이터가 비어 있음")
+
+    # subtype 컬럼 탐색 (대소문자 무시 + 동의어)
+    candidate_names = {compare_col_param.lower(), "subtype", "pam50", "group", "class", "label", "type"}
+    compare_col = next(
+        (c for c in meta_df.columns if c.lower() in candidate_names),
+        None,
+    )
+    if compare_col is None:
+        return _skip(
+            "plau_X001",
+            f"메타데이터에서 비교 컬럼을 찾을 수 없음 (탐색 후보: {sorted(candidate_names)})",
+        )
+
+    # 메타데이터의 sample_id → subtype 매핑 (첫 컬럼을 샘플 ID로 가정)
+    if meta_df.shape[1] < 2:
+        return _skip("plau_X001", "메타데이터 컬럼이 부족함")
+    sample_ids = meta_df.iloc[:, 0].astype(str)
+    subtype_series = meta_df[compare_col].astype(str)
+    subtype_map = pd.Series(subtype_series.values, index=sample_ids).dropna()
+    subtype_map = subtype_map[subtype_map != ""]
+
+    # 각 오믹스에 대해 ANOVA F-statistic 으로 검정 후 최소 p-value 채택
+    try:
+        from scipy import stats  # noqa: WPS433  (지연 import — 선택적 의존성)
+    except ImportError:
+        return _skip("plau_X001", "scipy 가 설치되어 있지 않아 분산 분석 불가")
+
+    omics_pvalues: list[tuple[str, float]] = []
+    for info in omics_infos:
+        sample_mean = _omics_sample_mean_series(info["df"]).dropna()
+        common = sample_mean.index.intersection(subtype_map.index)
+        if len(common) < min_group_size * 2:
+            continue
+        subtype_for_common = subtype_map.loc[common]
+        groups = [
+            sample_mean.loc[common][subtype_for_common == s].values
+            for s in subtype_for_common.unique()
+            if (subtype_for_common == s).sum() >= min_group_size
+        ]
+        if len(groups) < 2:
+            continue
+        f_stat, p_value = stats.f_oneway(*groups)
+        if not np.isnan(p_value):
+            omics_pvalues.append((info["filename"], float(p_value)))
+
+    if not omics_pvalues:
+        return _skip(
+            "plau_X001",
+            "subtype 그룹 크기/매칭 샘플이 부족해 ANOVA 를 실행하지 못함",
+        )
+
+    # 가장 분리도가 큰(=p-value 가장 작은) 오믹스 결과로 평가
+    omics_pvalues.sort(key=lambda x: x[1])
+    best_file, best_p = omics_pvalues[0]
+    passed = best_p < p_threshold
+    details = (
+        f"subtype='{compare_col}' 그룹별 발현 분리 ANOVA p-value={best_p:.4f} "
+        f"(임계값 < {p_threshold}, 기준 파일: {best_file})"
+    )
+    return _result(
+        "plau_X001",
+        passed,
+        round(best_p, 6),
+        details,
+        filename=best_file,
+        data_type="metadata+omics",
+    )
 
 
 # ─── 메인 검증 실행 ──────────────────────────────────────────────────────────

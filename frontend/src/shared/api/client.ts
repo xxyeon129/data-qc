@@ -222,6 +222,13 @@ class ApiClient {
     });
   }
 
+  async executeAIValidation(projectId: number, minCorrelation = 0.3) {
+    return this.request(`/validation/execute-ai?project_id=${projectId}`, {
+      method: "POST",
+      data: { minCorrelation },
+    });
+  }
+
   async getValidationStatus(jobId: string) {
     return this.request(`/validation/status/${jobId}`);
   }

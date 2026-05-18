@@ -28,6 +28,10 @@ uploads/
 *.xlsx
 *.pkl
 *.h5
+
+# Local analysis caches (e.g. remote MOCHI source snapshots, diagnostic logs)
+.cache/
+backend/_inspect_remote.log
 *.hdf5
 
 # Logs
