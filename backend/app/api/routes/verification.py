@@ -211,9 +211,17 @@ async def get_verification_status(
 
 @router.get("/rules")
 async def get_verification_rules(
-    project_id: Optional[int] = None, db: Session = Depends(get_db)
+    project_id: Optional[int] = None,
+    is_custom: Optional[bool] = None,
+    db: Session = Depends(get_db),
 ):
-    """검증 규칙 목록 조회 (명세서 §5 신규 + 옛 필드 모두 포함)"""
+    """
+    검증 규칙 목록 조회 (명세서 §5 신규 + 옛 필드 모두 포함)
+
+    Query Parameters:
+        - project_id: 특정 프로젝트의 규칙 + 전역 규칙 조회 (없으면 전역 규칙만)
+        - is_custom: True 이면 사용자가 추가한 커스텀 규칙만, False 이면 시스템 규칙만
+    """
     query = db.query(VerificationRuleModel)
 
     if project_id:
@@ -224,7 +232,22 @@ async def get_verification_rules(
     else:
         query = query.filter(VerificationRuleModel.project_id.is_(None))
 
-    rules = query.order_by(VerificationRuleModel.metric_id).all()
+    if is_custom is not None:
+        query = query.filter(VerificationRuleModel.is_custom == is_custom)
+
+    rules = query.order_by(VerificationRuleModel.created_at.desc()).all()
+    return [_rule_to_response(r) for r in rules]
+
+
+@router.get("/rules/custom")
+async def get_custom_verification_rules(db: Session = Depends(get_db)):
+    """사용자가 생성한 커스텀 검증 규칙만 조회 (최신순)"""
+    rules = (
+        db.query(VerificationRuleModel)
+        .filter(VerificationRuleModel.is_custom == True)  # noqa: E712
+        .order_by(VerificationRuleModel.created_at.desc())
+        .all()
+    )
     return [_rule_to_response(r) for r in rules]
 
 

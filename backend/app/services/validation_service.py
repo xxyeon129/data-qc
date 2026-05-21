@@ -44,6 +44,9 @@ METRIC_METADATA: dict[str, dict] = {
     # Plausibility — CROSS
     "plau_X001": {"name": "메타데이터-오믹스 subtype 일관성", "level": "VALUE", "context": "Validation", "severity": "convention", "dimension": "Plausibility", "qualityLevel": "advanced"},
     "plau_X002": {"name": "오믹스 간 발현 상관관계", "level": "VALUE", "context": "Validation", "severity": "warning", "dimension": "Plausibility", "qualityLevel": "advanced"},
+    # Plausibility — BATCH (명세서 v2.0 §5 신규)
+    "plau_B001": {"name": "배치 레이블 컬럼 존재 및 분포", "level": "COLUMN", "context": "Verification", "severity": "warning", "dimension": "Plausibility", "qualityLevel": "advanced"},
+    "plau_B002": {"name": "배치별 발현값 평균 편차 (CV%)", "level": "VALUE", "context": "Verification", "severity": "warning", "dimension": "Plausibility", "qualityLevel": "advanced"},
     # Conformance — FILE
     "conf_F001": {"name": "파일 형식(구분자) 일관성", "level": "FILE", "context": "Verification", "severity": "fatal", "dimension": "Conformance", "qualityLevel": "basic"},
     # Conformance — COLUMN
@@ -69,6 +72,121 @@ DEFAULT_MISSING_THRESHOLDS: dict[str, float] = {
     "metabolomics": 25.0,
     "metadata": 10.0,
 }
+
+
+# ─── 공통 유틸리티 ──────────────────────────────────────────────────────────
+
+# pandas 기본 NA 인식에 잡히지 않는 문자열 표현들.
+# `engine.py` 의 NA_VALUES 와 동등 — TCGA / GDC 데이터에서 자주 등장한다.
+NA_STRINGS: list[str] = [
+    "", "NA", "na", "Na", "null", "NULL", "Null", "NaN", "nan", "None", "none",
+    ".", "N/A", "n/a", "-", "--", "?", "missing", "MISSING", "not reported",
+    "Not Reported", "not available", "Not Available", "unknown", "Unknown",
+]
+
+
+def _replace_string_nas(df: pd.DataFrame) -> pd.DataFrame:
+    """문자열 형태의 NA 표현을 numpy.nan 으로 정규화한 사본을 반환.
+
+    `df.select_dtypes(include="number")` 가 비수치 NA 표현을 만난 컬럼을 통째로
+    제외해버리는 문제를 회피하기 위해 결측률/수치 검사 전에 호출한다.
+    """
+    return df.replace(NA_STRINGS, np.nan)
+
+
+def _to_numeric_df(df: pd.DataFrame) -> pd.DataFrame:
+    """모든 컬럼을 수치형으로 강제 변환한다(에러는 NaN).
+
+    NA 문자열이 섞여 있어 dtype 이 object 로 잡힌 컬럼을 IQR/하한/상한 등
+    수치 검사 대상에 포함시킬 수 있게 한다.
+    """
+    return df.apply(pd.to_numeric, errors="coerce")
+
+
+def _find_column(df: pd.DataFrame, candidates: list[str]) -> str | None:
+    """후보 컬럼명을 케이스 비민감 + 점(.) 접미/접두 표기 부분일치로 탐색한다.
+
+    예) 후보 ``"gender"`` 가 데이터에서 ``"gender.demographic"`` 으로 존재해도
+    매칭된다. TCGA/GDC 다운로드본의 ``age_at_index.demographic`` 같은 컬럼
+    이름을 자동으로 잡기 위한 헬퍼.
+    """
+    cols_lower = {c.lower(): c for c in df.columns}
+    # 1단계: 정확 일치 (case-insensitive)
+    for cand in candidates:
+        if cand.lower() in cols_lower:
+            return cols_lower[cand.lower()]
+    # 2단계: 점(.) 표기 부분일치
+    for cand in candidates:
+        cand_l = cand.lower()
+        for cl, orig in cols_lower.items():
+            if cl == cand_l or cl.startswith(cand_l + ".") or cl.endswith("." + cand_l):
+                return orig
+    return None
+
+
+# 배치/플레이트 후보 컬럼 — TCGA/GDC + 일반 LIMS 명명규칙 망라
+BATCH_CANDIDATE_COLUMNS: list[str] = [
+    "batch", "batch_id", "batchid", "batch_number",
+    "plate", "plate_id", "plateid",
+    "run", "run_id", "center", "center_id", "centre", "centre_id",
+    "tss", "tss_code", "platform", "sequencing_platform",
+]
+
+# TCGA 바코드의 TSS(Tissue Source Site) 코드 추출 패턴
+_TCGA_TSS_PATTERN = re.compile(r"^TCGA-([A-Za-z0-9]{2})-")
+
+
+def _extract_tcga_tss(sample_ids: pd.Series, coverage_threshold: float = 0.7) -> pd.Series | None:
+    """샘플 ID 시리즈에서 TCGA TSS 코드를 추출해 프록시 배치 레이블로 반환.
+
+    바코드 매칭 비율이 ``coverage_threshold`` 미만이면 None 을 돌려 잘못된
+    프록시 추론을 차단한다.
+    """
+    if sample_ids is None or len(sample_ids) == 0:
+        return None
+    ids = sample_ids.astype(str)
+    matched = 0
+    vals: list[Any] = []
+    for s in ids:
+        m = _TCGA_TSS_PATTERN.match(s)
+        if m:
+            matched += 1
+            vals.append(m.group(1).upper())
+        else:
+            vals.append(np.nan)
+    if matched / len(ids) < coverage_threshold:
+        return None
+    return pd.Series(vals, index=ids.index, dtype="object")
+
+
+def _get_batch_labels(
+    df: pd.DataFrame,
+    sample_id_series: pd.Series | None = None,
+) -> tuple[pd.Series | None, str, str]:
+    """배치 레이블을 (메타데이터 컬럼 → TCGA TSS 프록시) 순으로 추출한다.
+
+    Returns
+    -------
+    (labels, source, column_name)
+        - labels: 배치 레이블 Series (없으면 None)
+        - source: "metadata" | "tcga_proxy_tss" | "none"
+        - column_name: 추출에 사용된 컬럼명 또는 "sample_id"
+    """
+    colmap = {c.lower(): c for c in df.columns}
+    for cand in BATCH_CANDIDATE_COLUMNS:
+        if cand in colmap:
+            col = colmap[cand]
+            labels = df[col].astype(str).str.strip().replace(NA_STRINGS, np.nan)
+            if labels.notna().sum() > 0:
+                return labels, "metadata", col
+
+    # TCGA TSS proxy — 첫 컬럼이 샘플 ID 라는 가정 (메타데이터/오믹스 공통)
+    if sample_id_series is None and len(df.columns) > 0:
+        sample_id_series = df.iloc[:, 0]
+    tss = _extract_tcga_tss(sample_id_series) if sample_id_series is not None else None
+    if tss is not None and tss.notna().sum() > 0:
+        return tss, "tcga_proxy_tss", "sample_id"
+    return None, "none", ""
 
 
 # ─── 결과 헬퍼 ──────────────────────────────────────────────────────────────
@@ -155,14 +273,20 @@ def check_conf_F001(file_path: Path, data_type: str, raw_content: str) -> dict:
 
 
 def check_comp_F003(df: pd.DataFrame, file_path: Path, data_type: str, params: dict) -> dict:
-    """전체 데이터 결측률 검사 (omics 전용)"""
+    """전체 데이터 결측률 검사 (omics 전용)
+
+    "NA"/"."/"-" 등 문자열 NA 가 섞여 있어도 결측으로 카운트하기 위해
+    수치형 변환 전에 :func:`_replace_string_nas` 로 정규화한다.
+    """
     if data_type not in OMICS_TYPES:
         return _skip("comp_F003", "omics 전용 지표 (metadata 제외)", file_path.name, data_type)
     threshold = params.get("threshold", DEFAULT_MISSING_THRESHOLDS.get(data_type, 30.0))
-    numeric_df = df.select_dtypes(include="number")
-    if numeric_df.empty:
+    # 첫 컬럼(샘플 ID)은 결측률 계산에서 제외, 나머지를 NA 정규화 후 수치형으로 변환
+    feature_df = df.iloc[:, 1:] if df.shape[1] > 1 else df
+    numeric_df = _to_numeric_df(_replace_string_nas(feature_df))
+    if numeric_df.empty or numeric_df.size == 0:
         return _skip("comp_F003", "수치형 데이터 없음", file_path.name, data_type)
-    total_missing_rate = numeric_df.isna().mean().mean() * 100
+    total_missing_rate = float(numeric_df.isna().sum().sum() / numeric_df.size * 100)
     passed = total_missing_rate <= threshold
     return _result(
         "comp_F003", passed, round(total_missing_rate, 2),
@@ -190,9 +314,10 @@ def check_comp_C001(df: pd.DataFrame, file_path: Path, data_type: str, params: d
 
 
 def check_comp_C002(df: pd.DataFrame, file_path: Path, data_type: str, params: dict) -> dict:
-    """컬럼별 결측률 검사"""
+    """컬럼별 결측률 검사 — 문자열 NA 표현도 결측으로 카운트"""
     threshold = params.get("threshold", DEFAULT_MISSING_THRESHOLDS.get(data_type, 30.0))
-    col_missing = (df.isna().mean() * 100).round(2)
+    normalized = _replace_string_nas(df)
+    col_missing = (normalized.isna().mean() * 100).round(2)
     violating = col_missing[col_missing > threshold]
     passed = len(violating) == 0
     max_rate = float(col_missing.max()) if len(col_missing) > 0 else 0.0
@@ -205,9 +330,10 @@ def check_comp_C002(df: pd.DataFrame, file_path: Path, data_type: str, params: d
 
 
 def check_comp_C003(df: pd.DataFrame, file_path: Path, data_type: str, params: dict) -> dict:
-    """행(샘플) 완전성 검사"""
+    """행(샘플) 완전성 검사 — 문자열 NA 표현도 결측으로 카운트"""
     threshold = params.get("threshold", 50.0)
-    row_missing = (df.isna().mean(axis=1) * 100).round(2)
+    normalized = _replace_string_nas(df)
+    row_missing = (normalized.isna().mean(axis=1) * 100).round(2)
     violating_idx = row_missing[row_missing > threshold].index.tolist()
     passed = len(violating_idx) == 0
     max_rate = float(row_missing.max()) if len(row_missing) > 0 else 0.0
@@ -244,16 +370,28 @@ def check_comp_C004(df: pd.DataFrame, file_path: Path, data_type: str, params: d
     return _skip("comp_C004", f"조건 컬럼 '{cond_col}'의 조건 미충족 → 검사 불필요", file_path.name, data_type)
 
 
+def _omics_numeric(df: pd.DataFrame) -> pd.DataFrame:
+    """오믹스 검사를 위해 NA 정규화 + 수치형 강제 변환된 피처 행렬을 반환.
+
+    - 첫 컬럼은 샘플 ID 로 보고 제외
+    - 문자열 NA 표현은 NaN 으로 정규화 후 모두 수치형으로 변환
+    - 전부 NaN 인 컬럼은 제거
+    """
+    feature_df = df.iloc[:, 1:] if df.shape[1] > 1 else df
+    numeric = _to_numeric_df(_replace_string_nas(feature_df))
+    return numeric.dropna(axis=1, how="all")
+
+
 def check_plau_C001(df: pd.DataFrame, file_path: Path, data_type: str, params: dict) -> dict:
     """발현값 하한 검사"""
     if data_type not in OMICS_TYPES:
         return _skip("plau_C001", "omics 전용 지표", file_path.name, data_type)
     min_val = params.get("min", -np.inf)
-    numeric_df = df.select_dtypes(include="number")
-    if numeric_df.empty:
+    numeric_df = _omics_numeric(df)
+    if numeric_df.empty or numeric_df.count().sum() == 0:
         return _skip("plau_C001", "수치형 데이터 없음", file_path.name, data_type)
-    actual_min = float(numeric_df.min().min())
-    below = (numeric_df < min_val).any().any()
+    actual_min = float(np.nanmin(numeric_df.values))
+    below = bool((numeric_df < min_val).any().any())
     return _result(
         "plau_C001", not below, round(actual_min, 4),
         f"최솟값 {actual_min:.4f} (하한: {min_val})",
@@ -266,11 +404,11 @@ def check_plau_C002(df: pd.DataFrame, file_path: Path, data_type: str, params: d
     if data_type not in OMICS_TYPES:
         return _skip("plau_C002", "omics 전용 지표", file_path.name, data_type)
     max_val = params.get("max", np.inf)
-    numeric_df = df.select_dtypes(include="number")
-    if numeric_df.empty:
+    numeric_df = _omics_numeric(df)
+    if numeric_df.empty or numeric_df.count().sum() == 0:
         return _skip("plau_C002", "수치형 데이터 없음", file_path.name, data_type)
-    actual_max = float(numeric_df.max().max())
-    above = (numeric_df > max_val).any().any()
+    actual_max = float(np.nanmax(numeric_df.values))
+    above = bool((numeric_df > max_val).any().any())
     return _result(
         "plau_C002", not above, round(actual_max, 4),
         f"최댓값 {actual_max:.4f} (상한: {max_val})",
@@ -283,7 +421,7 @@ def check_plau_C003(df: pd.DataFrame, file_path: Path, data_type: str, params: d
     if data_type not in OMICS_TYPES:
         return _skip("plau_C003", "omics 전용 지표", file_path.name, data_type)
     threshold = params.get("threshold", 10.0)
-    numeric_df = df.select_dtypes(include="number")
+    numeric_df = _omics_numeric(df)
     if numeric_df.empty or numeric_df.shape[0] < 4:
         return _skip("plau_C003", "데이터 행이 너무 적어 IQR 계산 불가 (최소 4행 필요)", file_path.name, data_type)
     # 대용량 행렬: 샘플(행) 방향으로 IQR 계산 (행 = 샘플, 열 = 피처)
@@ -311,64 +449,123 @@ def check_plau_C004(df: pd.DataFrame, file_path: Path, data_type: str, params: d
     """상수값 컬럼 탐지 (분산=0)"""
     if data_type not in OMICS_TYPES:
         return _skip("plau_C004", "omics 전용 지표", file_path.name, data_type)
-    numeric_df = df.select_dtypes(include="number")
+    numeric_df = _omics_numeric(df)
     if numeric_df.empty:
         return _skip("plau_C004", "수치형 데이터 없음", file_path.name, data_type)
-    zero_var_cols = numeric_df.columns[numeric_df.var(ddof=0) == 0].tolist()
+    variances = numeric_df.var(ddof=0)
+    zero_var_cols = variances[variances.fillna(0) == 0].index.tolist()
     passed = len(zero_var_cols) == 0
     return _result(
         "plau_C004", passed, len(zero_var_cols),
         f"분산=0 컬럼 없음" if passed else f"분산=0 컬럼 {len(zero_var_cols)}개 발견",
         file_path.name, data_type,
-        zero_var_cols[:20],
+        [str(c) for c in zero_var_cols[:20]],
     )
 
 
+# 성별/연령/날짜 컬럼 자동 탐색 후보 — TCGA/GDC 명명규칙 포함
+GENDER_CANDIDATES: list[str] = [
+    "gender.demographic", "gender", "sex", "성별",
+    "sex_at_birth", "Sex", "Gender",
+]
+AGE_CANDIDATES: list[str] = [
+    "age_at_index.demographic", "age_at_diagnosis.diagnoses",
+    "age_at_index", "age_at_diagnosis", "age_at_earliest_diagnosis_in_years.diagnoses.xena_derived",
+    "age", "나이", "연령",
+]
+DATE_START_CANDIDATES: list[str] = [
+    "start_date", "date_of_diagnosis", "diagnosis_date",
+    "days_to_birth.demographic", "days_to_birth",
+]
+DATE_END_CANDIDATES: list[str] = [
+    "end_date", "date_of_death", "date_of_last_follow_up",
+    "days_to_death.demographic", "days_to_death",
+    "days_to_last_follow_up.diagnoses", "days_to_last_follow_up", "days_to_last_known_alive",
+]
+BIRTH_CANDIDATES: list[str] = [
+    "birth_date", "date_of_birth", "days_to_birth.demographic", "days_to_birth",
+]
+EVENT_CANDIDATES: list[str] = [
+    "diagnosis_date", "date_of_diagnosis", "age_at_diagnosis.diagnoses", "age_at_diagnosis",
+    "days_to_diagnosis", "event_date",
+]
+
+
 def check_plau_V001(df: pd.DataFrame, file_path: Path, data_type: str, params: dict) -> dict:
-    """성별 값 허용범위 검사 (metadata 전용)"""
+    """성별 값 허용범위 검사 (metadata 전용)
+
+    TCGA/GDC 의 ``gender.demographic`` 처럼 점(.) 접미가 붙은 컬럼명도
+    :func:`_find_column` 으로 자동 탐색한다.
+    """
     if data_type != "metadata":
         return _skip("plau_V001", "metadata 전용 지표", file_path.name, data_type)
-    target_col = params.get("targetColumn", "sex")
-    allowed = set(params.get("allowedValues", ["M", "F", "male", "female", "Unknown", "m", "f", "Male", "Female"]))
-    gender_col = next((c for c in df.columns if c.lower() in {"sex", "gender", "성별"}), None)
-    if target_col != "first_column" and target_col in df.columns:
+    target_col = params.get("targetColumn", "")
+    allowed = set(params.get("allowedValues", [
+        "M", "F", "m", "f", "male", "female", "Male", "Female",
+        "남", "여", "Unknown", "unknown",
+    ]))
+
+    gender_col: str | None = None
+    if target_col and target_col != "first_column" and target_col in df.columns:
         gender_col = target_col
+    else:
+        gender_col = _find_column(df, GENDER_CANDIDATES)
     if gender_col is None:
-        return _skip("plau_V001", "성별 컬럼 찾을 수 없음 (sex/gender)", file_path.name, data_type)
-    col_vals = df[gender_col].dropna().astype(str)
+        return _skip("plau_V001", "성별 컬럼 찾을 수 없음 (sex/gender/gender.demographic)", file_path.name, data_type)
+
+    # 'not reported' 류는 NA_STRINGS 로 이미 정규화되므로 검증 대상에서 자연스럽게 제외
+    col_vals = df[gender_col].replace(NA_STRINGS, np.nan).dropna().astype(str).str.strip()
     invalid = col_vals[~col_vals.isin(allowed)].unique().tolist()
     passed = len(invalid) == 0
     return _result(
         "plau_V001", passed, len(invalid),
-        f"성별 값 검증 통과" if passed else f"허용되지 않은 값 {len(invalid)}개: {invalid[:5]}",
+        f"'{gender_col}' 성별 값 검증 통과 ({len(col_vals)}건)"
+        if passed else f"허용되지 않은 값 {len(invalid)}개: {invalid[:5]}",
         file_path.name, data_type,
         invalid[:20],
     )
 
 
 def check_plau_V002(df: pd.DataFrame, file_path: Path, data_type: str, params: dict) -> dict:
-    """연령 값 범위 검사 (metadata 전용)"""
+    """연령 값 범위 검사 (metadata 전용)
+
+    - TCGA ``age_at_index.demographic`` / ``age_at_diagnosis`` 등 점(.) 접미
+      컬럼명을 자동 탐색한다.
+    - 중앙값이 365 보다 크면 일(day) 단위로 보고 365.25 로 나눠 연(year) 단위로
+      자동 변환한다 (TCGA 의 ``age_at_diagnosis`` 는 일 단위).
+    """
     if data_type != "metadata":
         return _skip("plau_V002", "metadata 전용 지표", file_path.name, data_type)
-    target_col = params.get("targetColumn", "age")
+    target_col = params.get("targetColumn", "")
     min_age = params.get("min", 0)
     max_age = params.get("max", 120)
-    age_col = next((c for c in df.columns if c.lower() in {"age", "나이", "연령"}), None)
-    if target_col in df.columns:
+
+    age_col: str | None = None
+    if target_col and target_col != "first_column" and target_col in df.columns:
         age_col = target_col
+    else:
+        age_col = _find_column(df, AGE_CANDIDATES)
     if age_col is None:
-        return _skip("plau_V002", "연령 컬럼 찾을 수 없음 (age/나이)", file_path.name, data_type)
-    try:
-        ages = pd.to_numeric(df[age_col], errors="coerce").dropna()
-    except Exception:
-        return _skip("plau_V002", f"연령 컬럼 '{age_col}'을 숫자로 변환할 수 없음", file_path.name, data_type)
+        return _skip("plau_V002", "연령 컬럼 찾을 수 없음 (age/age_at_index/age_at_diagnosis)", file_path.name, data_type)
+
+    raw = df[age_col].replace(NA_STRINGS, np.nan)
+    ages = pd.to_numeric(raw, errors="coerce").dropna()
+    if len(ages) == 0:
+        return _skip("plau_V002", f"연령 컬럼 '{age_col}' 에 유효 수치값 없음", file_path.name, data_type)
+
+    unit_note = f" (col='{age_col}')"
+    if float(ages.median()) > 365:
+        ages = ages / 365.25
+        unit_note = f" (col='{age_col}', day→year 자동 변환)"
+
     out_of_range = ages[(ages < min_age) | (ages > max_age)]
     passed = len(out_of_range) == 0
     return _result(
         "plau_V002", passed, len(out_of_range),
-        f"연령 범위 검증 통과 ({min_age}~{max_age})" if passed else f"범위 초과 값 {len(out_of_range)}개",
+        f"연령 범위 [{min_age}, {max_age}] 검증 통과{unit_note}"
+        if passed else f"범위 초과 값 {len(out_of_range)}개{unit_note}",
         file_path.name, data_type,
-        [str(v) for v in out_of_range.tolist()[:20]],
+        [str(round(float(v), 1)) for v in out_of_range.tolist()[:20]],
     )
 
 
@@ -379,8 +576,8 @@ def check_plau_V003(df: pd.DataFrame, file_path: Path, data_type: str, params: d
     allow_negative = params.get("allowNegative", False)
     if allow_negative:
         return _result("plau_V003", True, 0, "음수값 허용 설정됨", file_path.name, data_type)
-    numeric_df = df.select_dtypes(include="number")
-    if numeric_df.empty:
+    numeric_df = _omics_numeric(df)
+    if numeric_df.empty or numeric_df.count().sum() == 0:
         return _skip("plau_V003", "수치형 데이터 없음", file_path.name, data_type)
     neg_count = int((numeric_df < 0).sum().sum())
     passed = neg_count == 0
@@ -391,52 +588,125 @@ def check_plau_V003(df: pd.DataFrame, file_path: Path, data_type: str, params: d
     )
 
 
+def _parse_temporal_series(s: pd.Series) -> tuple[pd.Series, str]:
+    """날짜 / 일수(days_to_*) 시리즈를 통일된 정렬 가능 수치로 변환.
+
+    - 컬럼명이 ``days_to_*`` 로 시작하거나 ``days`` 를 포함하면 정수 일수로 간주
+    - 그 외에는 ``pd.to_datetime`` 시도, 실패한 셀은 NaN
+    """
+    cleaned = s.replace(NA_STRINGS, np.nan)
+    name = str(s.name).lower()
+    if name.startswith("days_to_") or "days_to" in name or name.endswith("_days") or name == "days":
+        return pd.to_numeric(cleaned, errors="coerce"), "days"
+    parsed = pd.to_datetime(cleaned, errors="coerce")
+    if parsed.notna().sum() == 0:
+        # 날짜로 못 잡으면 마지막으로 수치형으로 시도
+        return pd.to_numeric(cleaned, errors="coerce"), "numeric"
+    return parsed, "datetime"
+
+
 def check_plau_T001(df: pd.DataFrame, file_path: Path, data_type: str, params: dict) -> dict:
-    """날짜 순서 타당성 (시작 <= 종료) — metadata 전용"""
+    """날짜 순서 타당성 (시작 <= 종료) — metadata 전용
+
+    파라미터로 ``startColumn``/``endColumn`` 이 명시되면 우선 사용하고,
+    없으면 TCGA/GDC 의 ``days_to_birth`` / ``days_to_death`` /
+    ``days_to_last_follow_up`` 등을 자동 탐색한다.
+    """
     if data_type != "metadata":
         return _skip("plau_T001", "metadata 전용 지표", file_path.name, data_type)
-    start_col = params.get("startColumn", "")
-    end_col = params.get("endColumn", "")
-    if not start_col or not end_col:
-        return _skip("plau_T001", "startColumn / endColumn 파라미터 미설정", file_path.name, data_type)
-    if start_col not in df.columns or end_col not in df.columns:
-        return _skip("plau_T001", f"컬럼 없음: {start_col}, {end_col}", file_path.name, data_type)
-    try:
-        start_dates = pd.to_datetime(df[start_col], errors="coerce")
-        end_dates = pd.to_datetime(df[end_col], errors="coerce")
-    except Exception:
-        return _skip("plau_T001", "날짜 파싱 실패", file_path.name, data_type)
-    valid = start_dates.notna() & end_dates.notna()
-    violations = int((start_dates[valid] > end_dates[valid]).sum())
+    start_param = params.get("startColumn", "")
+    end_param = params.get("endColumn", "")
+
+    if start_param and start_param in df.columns:
+        start_col: str | None = start_param
+    else:
+        start_col = _find_column(df, DATE_START_CANDIDATES)
+    if end_param and end_param in df.columns:
+        end_col: str | None = end_param
+    else:
+        end_col = _find_column(df, DATE_END_CANDIDATES)
+
+    if start_col is None or end_col is None:
+        return _skip(
+            "plau_T001",
+            "날짜/시간 컬럼 자동 탐색 실패 (start/end_date 또는 days_to_birth/days_to_death)",
+            file_path.name, data_type,
+        )
+
+    starts, start_kind = _parse_temporal_series(df[start_col])
+    ends, end_kind = _parse_temporal_series(df[end_col])
+    if start_kind != end_kind and not (start_kind in ("days", "numeric") and end_kind in ("days", "numeric")):
+        return _skip(
+            "plau_T001",
+            f"날짜 단위 불일치 (start={start_kind}, end={end_kind})",
+            file_path.name, data_type,
+        )
+
+    valid = starts.notna() & ends.notna()
+    if int(valid.sum()) == 0:
+        return _skip("plau_T001", "유효 비교 가능 행 없음", file_path.name, data_type)
+    violations = int((starts[valid] > ends[valid]).sum())
     passed = violations == 0
     return _result(
         "plau_T001", passed, violations,
-        f"날짜 순서 정상" if passed else f"시작 > 종료인 행 {violations}개",
+        f"날짜 순서 정상 ('{start_col}' ≤ '{end_col}', {int(valid.sum())}건 비교)"
+        if passed else f"'{start_col}' > '{end_col}' 인 행 {violations}개",
         file_path.name, data_type,
     )
 
 
 def check_plau_T002(df: pd.DataFrame, file_path: Path, data_type: str, params: dict) -> dict:
-    """진단일-출생일 순서 검사 (metadata 전용)"""
+    """출생-진단(이벤트) 날짜 순서 검사 (metadata 전용).
+
+    파라미터로 ``birthColumn``/``eventColumn`` 이 명시되면 우선 사용하고,
+    없으면 TCGA 의 ``days_to_birth`` 와 ``age_at_diagnosis`` /
+    ``date_of_diagnosis`` 류를 자동 탐색한다.
+
+    참고: TCGA 의 ``days_to_birth`` 는 진단 시점 기준 음수(과거)이므로
+    의미상 "출생이 진단보다 앞선다" 는 사실은 ``days_to_birth < 0`` 으로
+    표현된다. 같은 단위(연/일)로 환산해 비교한다.
+    """
     if data_type != "metadata":
         return _skip("plau_T002", "metadata 전용 지표", file_path.name, data_type)
-    birth_col = params.get("birthColumn", "")
-    event_col = params.get("eventColumn", "")
-    if not birth_col or not event_col:
-        return _skip("plau_T002", "birthColumn / eventColumn 파라미터 미설정", file_path.name, data_type)
-    if birth_col not in df.columns or event_col not in df.columns:
-        return _skip("plau_T002", f"컬럼 없음: {birth_col}, {event_col}", file_path.name, data_type)
-    try:
-        birth_dates = pd.to_datetime(df[birth_col], errors="coerce")
-        event_dates = pd.to_datetime(df[event_col], errors="coerce")
-    except Exception:
-        return _skip("plau_T002", "날짜 파싱 실패", file_path.name, data_type)
-    valid = birth_dates.notna() & event_dates.notna()
-    violations = int((event_dates[valid] < birth_dates[valid]).sum())
+    birth_param = params.get("birthColumn", "")
+    event_param = params.get("eventColumn", "")
+
+    birth_col = birth_param if birth_param and birth_param in df.columns else _find_column(df, BIRTH_CANDIDATES)
+    event_col = event_param if event_param and event_param in df.columns else _find_column(df, EVENT_CANDIDATES)
+    if birth_col is None or event_col is None:
+        return _skip(
+            "plau_T002",
+            "출생/진단 컬럼 자동 탐색 실패 (birth_date/days_to_birth, date_of_diagnosis/age_at_diagnosis)",
+            file_path.name, data_type,
+        )
+
+    birth_vals, birth_kind = _parse_temporal_series(df[birth_col])
+    event_vals, event_kind = _parse_temporal_series(df[event_col])
+    valid = birth_vals.notna() & event_vals.notna()
+    if int(valid.sum()) == 0:
+        return _skip("plau_T002", "유효 비교 가능 행 없음", file_path.name, data_type)
+
+    # 두 컬럼 모두 datetime 이면 일반 날짜 비교
+    if birth_kind == "datetime" and event_kind == "datetime":
+        violations = int((event_vals[valid] < birth_vals[valid]).sum())
+        details_extra = ""
+    else:
+        # days_to_birth(음수=과거) + age_at_diagnosis(양수=경과일) 같은 케이스
+        # → "이벤트가 출생보다 늦다" 만 확인.
+        b_name = str(birth_col).lower()
+        if "days_to_birth" in b_name:
+            # days_to_birth 는 보통 음수가 정상
+            violations = int(((birth_vals[valid] > 0) & (event_vals[valid] > 0)).sum())
+            details_extra = " (days_to_birth 양수 + 양수 진단경과 케이스 검사)"
+        else:
+            violations = int((event_vals[valid] < birth_vals[valid]).sum())
+            details_extra = ""
+
     passed = violations == 0
     return _result(
         "plau_T002", passed, violations,
-        "출생일 이후 이벤트 날짜 정상" if passed else f"출생일 이전 이벤트 {violations}건",
+        f"출생→이벤트 순서 정상 ('{birth_col}' → '{event_col}', {int(valid.sum())}건 비교){details_extra}"
+        if passed else f"출생일 이후 발생해야 할 이벤트 {violations}건 위반{details_extra}",
         file_path.name, data_type,
     )
 
@@ -461,22 +731,29 @@ def check_conf_C001(df: pd.DataFrame, file_path: Path, data_type: str, params: d
 
 
 def check_conf_C002(df: pd.DataFrame, file_path: Path, data_type: str, params: dict) -> dict:
-    """수치형 컬럼 데이터 타입 검사 (omics 전용)"""
+    """수치형 컬럼 데이터 타입 검사 (omics 전용)
+
+    문자열 NA 표현(``NA``, ``.``, ``-`` 등)은 결측으로 보고 검증에서 제외한다.
+    """
     if data_type not in OMICS_TYPES:
         return _skip("conf_C002", "omics 전용 지표", file_path.name, data_type)
     exclude = set(params.get("excludeColumns", [df.columns[0]] if len(df.columns) > 0 else []))
     target_cols = [c for c in df.columns if c not in exclude]
     non_numeric = []
     for col in target_cols:
-        converted = pd.to_numeric(df[col], errors="coerce")
-        if converted.isna().all() and df[col].notna().any():
+        series = df[col].replace(NA_STRINGS, np.nan)
+        non_na = series.dropna()
+        if len(non_na) == 0:
+            continue
+        converted = pd.to_numeric(non_na, errors="coerce")
+        if converted.isna().any():
             non_numeric.append(col)
     passed = len(non_numeric) == 0
     return _result(
         "conf_C002", passed, len(non_numeric),
         "수치형 타입 검증 통과" if passed else f"비수치형 컬럼 {len(non_numeric)}개",
         file_path.name, data_type,
-        non_numeric[:20],
+        [str(c) for c in non_numeric[:20]],
     )
 
 
@@ -565,8 +842,19 @@ def check_cross_metrics(
     enabled_metrics: set[str],
     params_map: dict[str, dict],
 ) -> list[dict]:
-    """교차 검증 지표 실행 (다중 파일 필요)"""
+    """교차 검증 지표 실행 (다중 파일 필요).
+
+    plau_B001/B002 (배치) 는 단일 파일에서도 동작하지만 메타데이터+오믹스
+    조합이 있을 때 더 의미가 있어 여기서 함께 처리한다.
+    """
     results = []
+
+    # 배치 지표는 단일 파일에서도 평가 가능 — 별도로 실행
+    if "plau_B001" in enabled_metrics:
+        results.append(_check_plau_B001(file_infos, params_map.get("plau_B001", {})))
+    if "plau_B002" in enabled_metrics:
+        results.append(_check_plau_B002(file_infos, params_map.get("plau_B002", {})))
+
     if len(file_infos) < 2:
         for mid in ["comp_X001", "comp_X002", "comp_X003", "plau_X001", "plau_X002", "conf_X001"]:
             if mid in enabled_metrics:
@@ -681,6 +969,178 @@ def check_cross_metrics(
         )
 
     return results
+
+
+# ─── 배치 효과 지표 구현 (plau_B001 / plau_B002) ───────────────────────────
+
+
+def _check_plau_B001(file_infos: list[dict], params: dict) -> dict:
+    """배치 레이블 컬럼 존재 및 분포 균형 검사 (명세서 §5).
+
+    - 메타데이터 파일에서 ``batch``/``plate``/``run``/``tss`` 등 명시적 컬럼을
+      우선 찾는다. 없으면 임의의 오믹스 파일 첫 컬럼(샘플 ID)에서 TCGA TSS
+      코드를 프록시 배치 레이블로 추출한다.
+    - 모든 배치 그룹 크기가 ``minGroupSize`` 이상이면 PASS, 일부 그룹이 작으면
+      WARNING.
+    """
+    min_group_size = int(params.get("minGroupSize", 3))
+
+    # 1) 메타데이터 우선
+    labels: pd.Series | None = None
+    source = "none"
+    column = ""
+    source_file = ""
+    for info in file_infos:
+        if info.get("data_type") == "metadata" and info.get("df") is not None:
+            labels, source, column = _get_batch_labels(info["df"], info["df"].iloc[:, 0] if info["df"].shape[1] > 0 else None)
+            if labels is not None:
+                source_file = info["filename"]
+                break
+
+    # 2) 메타데이터에 없으면 오믹스 파일의 샘플 ID에서 TSS 추출 시도
+    if labels is None:
+        for info in file_infos:
+            if info.get("data_type") in OMICS_TYPES and info.get("df") is not None and info["df"].shape[1] > 0:
+                tss = _extract_tcga_tss(info["df"].iloc[:, 0])
+                if tss is not None and tss.notna().sum() > 0:
+                    labels = tss
+                    source = "tcga_proxy_tss"
+                    column = "sample_id"
+                    source_file = info["filename"]
+                    break
+
+    if labels is None:
+        return _skip(
+            "plau_B001",
+            "배치 컬럼(batch/plate/run/tss) 및 TCGA 바코드 프록시 모두 사용 불가 — 배치 평가 생략",
+            filename="",
+            data_type="",
+        )
+
+    valid_labels = labels.dropna()
+    counts = valid_labels.value_counts()
+    n_batches = int(counts.size)
+    small_groups = int((counts < min_group_size).sum())
+
+    if n_batches < 2:
+        return _result(
+            "plau_B001", False, n_batches,
+            f"배치 그룹이 1개({list(counts.index)[:3]}) — 분포 평가 불가 (source={source})",
+            filename=source_file, data_type="metadata" if source == "metadata" else "all",
+        )
+
+    passed = small_groups == 0
+    details = (
+        f"배치 {n_batches}개 감지 (source={source}, column={column}), "
+        f"소규모 그룹(<{min_group_size}) {small_groups}개"
+    )
+    return _result(
+        "plau_B001", passed, n_batches, details,
+        filename=source_file, data_type="metadata" if source == "metadata" else "all",
+        affected_items=[str(k) for k in counts[counts < min_group_size].index[:20].tolist()],
+    )
+
+
+def _build_sample_to_batch(file_infos: list[dict]) -> tuple[pd.Series | None, str, str]:
+    """샘플 ID → 배치 레이블 매핑을 만든다.
+
+    - 메타데이터에 배치 컬럼이 있으면 (sample_id 첫 컬럼, batch 컬럼) 으로 매핑
+    - 없으면 임의 오믹스 파일의 샘플 ID 에서 TCGA TSS 프록시 시도
+    """
+    for info in file_infos:
+        if info.get("data_type") == "metadata" and info.get("df") is not None:
+            df = info["df"]
+            if df.shape[1] < 2:
+                continue
+            labels, source, column = _get_batch_labels(df, df.iloc[:, 0])
+            if labels is None:
+                continue
+            sample_ids = df.iloc[:, 0].astype(str)
+            mapping = pd.Series(labels.values, index=sample_ids).dropna()
+            mapping = mapping[mapping.astype(str) != ""]
+            if len(mapping) > 0:
+                return mapping, source, column
+
+    # 메타데이터에 없으면 오믹스 파일에서 TSS 프록시
+    for info in file_infos:
+        if info.get("data_type") in OMICS_TYPES and info.get("df") is not None and info["df"].shape[1] > 0:
+            sample_ids = info["df"].iloc[:, 0].astype(str)
+            tss = _extract_tcga_tss(sample_ids)
+            if tss is not None:
+                mapping = pd.Series(tss.values, index=sample_ids).dropna()
+                if len(mapping) > 0:
+                    return mapping, "tcga_proxy_tss", "sample_id"
+    return None, "none", ""
+
+
+def _check_plau_B002(file_infos: list[dict], params: dict) -> dict:
+    """배치별 발현값 평균 편차 검사 (명세서 §5, 오믹스 전용).
+
+    각 오믹스 파일에 대해 sample-level 평균 발현을 구한 뒤, 배치 레이블별
+    그룹 평균의 변동계수(CV%, σ/|μ|×100) 가 ``maxCV`` 이하인지 평가한다.
+    """
+    max_cv = float(params.get("maxCV", 15.0))
+
+    mapping, source, column = _build_sample_to_batch(file_infos)
+    if mapping is None:
+        return _skip(
+            "plau_B002",
+            "샘플→배치 매핑을 만들 수 없음 (메타데이터 배치 컬럼/TCGA 프록시 없음)",
+        )
+
+    omics_infos = [i for i in file_infos if i.get("data_type") in OMICS_TYPES and i.get("df") is not None]
+    if not omics_infos:
+        return _skip("plau_B002", "오믹스 파일이 없음")
+
+    per_file_cv: list[tuple[str, float, int]] = []
+    for info in omics_infos:
+        df = info["df"]
+        if df.shape[1] < 2:
+            continue
+        sample_ids = df.iloc[:, 0].astype(str)
+        feature_df = df.iloc[:, 1:]
+        numeric = _to_numeric_df(_replace_string_nas(feature_df))
+        if numeric.shape[1] == 0:
+            continue
+        # 첫 컬럼이 sample id 인 long-format(행=샘플)을 가정
+        sample_mean = numeric.mean(axis=1, skipna=True)
+        sample_mean.index = sample_ids
+
+        common = sample_mean.index.intersection(mapping.index)
+        if len(common) < 6:
+            continue
+        means = sample_mean.loc[common]
+        labels = mapping.loc[common]
+        # 그룹당 최소 2개 샘플이 있어야 평균 의미 있음
+        valid_groups = labels.value_counts()
+        valid_groups = valid_groups[valid_groups >= 2]
+        if len(valid_groups) < 2:
+            continue
+        mask = labels.isin(valid_groups.index)
+        batch_means = means[mask].groupby(labels[mask]).mean()
+        overall = float(means[mask].mean())
+        if not np.isfinite(overall) or abs(overall) < 1e-12:
+            continue
+        cv = float(batch_means.std(ddof=0) / abs(overall) * 100)
+        per_file_cv.append((info["filename"], cv, int(mask.sum())))
+
+    if not per_file_cv:
+        return _skip(
+            "plau_B002",
+            "유효한 오믹스↔배치 매칭 샘플이 부족해 CV 계산 불가",
+        )
+
+    # 가장 큰 CV (최악 모달리티) 를 기준으로 판정
+    worst_file, worst_cv, sample_n = max(per_file_cv, key=lambda x: x[1])
+    passed = worst_cv <= max_cv
+    return _result(
+        "plau_B002", passed, round(worst_cv, 2),
+        f"배치 간 평균 CV(최악) {worst_cv:.2f}% (임계값: {max_cv}%, source={source}, "
+        f"기준 파일: {worst_file}, n={sample_n})",
+        filename=worst_file,
+        data_type="omics",
+        affected_items=[f"{fn}: CV={cv:.2f}% (n={n})" for fn, cv, n in per_file_cv[:10]],
+    )
 
 
 # ─── 심화 Plausibility 교차 지표 구현 ──────────────────────────────────────
@@ -1063,6 +1523,8 @@ def get_default_rules() -> list[dict]:
         "plau_T002": {"validationType": "date_order", "parameters": {"birthColumn": "", "eventColumn": ""}},
         "plau_X001": {"validationType": "cross_consistency", "parameters": {"matchColumn": "sample_id", "compareColumn": "subtype"}},
         "plau_X002": {"validationType": "cross_correlation", "parameters": {"targetDataTypes": ["transcriptomics", "proteomics"], "minCorrelation": 0.3, "method": "pearson"}},
+        "plau_B001": {"validationType": "batch_distribution", "parameters": {"minGroupSize": 3}},
+        "plau_B002": {"validationType": "batch_cv", "parameters": {"maxCV": 15.0}},
         "conf_F001": {"validationType": "file_format", "parameters": {"checkDelimiterConsistency": True}},
         "conf_C001": {"validationType": "duplicate_check", "parameters": {"targetColumn": "first_column"}},
         "conf_C002": {"validationType": "datatype_check", "parameters": {"expectedType": "numeric", "targetColumn": "all_except_first"}},
@@ -1079,7 +1541,7 @@ def get_default_rules() -> list[dict]:
         data_types = list(ALL_TYPES)
         if "omics" in meta.get("name", "").lower() or metric_id in {
             "plau_C001", "plau_C002", "plau_C003", "plau_C004", "plau_V003",
-            "conf_C002", "comp_F003",
+            "conf_C002", "comp_F003", "plau_B002",
         }:
             data_types = list(OMICS_TYPES)
         elif metric_id in {

@@ -206,15 +206,15 @@ export const ValidationPage = () => {
                 </option>
               ))}
             </S.Select>
-            <S.Button onClick={handleExecuteValidation} disabled={!selectedProjectId || validating}>
+            {/* <S.Button onClick={handleExecuteValidation} disabled={!selectedProjectId || validating}>
               {validating ? "검증 중..." : "검증 실행"}
-            </S.Button>
+            </S.Button> */}
             <S.Button
               onClick={handleExecuteAIValidation}
               disabled={!selectedProjectId || validating}
               title="원격 MOCHI 모델로 RNA·Protein·Methyl 교차 예측 일관성을 측정합니다 (advanced)"
             >
-              AI 일관성 검증
+              {validating ? "검증 중..." : "검증 실행"}
             </S.Button>
           </S.HeaderActions>
         </S.CardHeader>

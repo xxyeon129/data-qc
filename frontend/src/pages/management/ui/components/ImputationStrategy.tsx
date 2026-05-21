@@ -71,11 +71,7 @@ interface ImputationStrategyProps {
   onExecutionEnd?: () => void;
 }
 
-export const ImputationStrategy: React.FC<ImputationStrategyProps> = ({
-  onImputationComplete,
-  onExecutionStart,
-  onExecutionEnd,
-}) => {
+export const ImputationStrategy: React.FC<ImputationStrategyProps> = ({ onImputationComplete, onExecutionStart, onExecutionEnd }) => {
   const [selectedMethod, setSelectedMethod] = useState("mochi");
   const [methods, setMethods] = useState<ImputationMethod[]>(defaultMethods);
   const [loading, setLoading] = useState(false);
@@ -93,7 +89,7 @@ export const ImputationStrategy: React.FC<ImputationStrategyProps> = ({
     const fetchProjects = async () => {
       try {
         setLoadingProjects(true);
-        const data = await apiClient.getProjects() as Project[];
+        const data = (await apiClient.getProjects()) as Project[];
         setProjects(data);
         if (data.length > 0) {
           setSelectedProjectId(data[0].id);
@@ -143,11 +139,7 @@ export const ImputationStrategy: React.FC<ImputationStrategyProps> = ({
       // 선택된 보간 방법에 따라 다른 API 호출
       if (selectedMethod === "mochi") {
         // MOCHI 멀티오믹스 보간 실행
-        result = await apiClient.executeMultiOmicsImputation(
-          selectedProjectId,
-          threshold,
-          qualityThreshold
-        );
+        result = await apiClient.executeMultiOmicsImputation(selectedProjectId, threshold, qualityThreshold);
       } else {
         // 다른 보간 방법 실행 (mean, knn, mice, etc.)
         result = await apiClient.executeImputation({
@@ -159,7 +151,7 @@ export const ImputationStrategy: React.FC<ImputationStrategyProps> = ({
             cross_validation: crossValidation,
             outlier_handling: outlierHandling,
             time_series_pattern: timeSeriesPattern,
-          }
+          },
         });
       }
 
@@ -170,7 +162,7 @@ export const ImputationStrategy: React.FC<ImputationStrategyProps> = ({
       const maxAttempts = 60; // 최대 2분 대기
 
       while (attempts < maxAttempts) {
-        await new Promise(resolve => setTimeout(resolve, 2000)); // 2초마다 체크
+        await new Promise((resolve) => setTimeout(resolve, 2000)); // 2초마다 체크
         const status: any = await apiClient.getImputationStatus(jobId);
 
         if (status.status === "completed") {
@@ -209,16 +201,11 @@ export const ImputationStrategy: React.FC<ImputationStrategyProps> = ({
 
   return (
     <S.SettingCard>
-
       <S.FormGroup>
         <S.FormLabel>프로젝트 선택</S.FormLabel>
-        <S.FormSelect
-          value={selectedProjectId || ""}
-          onChange={(e) => setSelectedProjectId(Number(e.target.value))}
-          disabled={loadingProjects}
-          >
+        <S.FormSelect value={selectedProjectId || ""} onChange={(e) => setSelectedProjectId(Number(e.target.value))} disabled={loadingProjects}>
           <option value="">프로젝트를 선택하세요</option>
-          {projects.map(project => (
+          {projects.map((project) => (
             <option key={project.id} value={project.id}>
               {project.name}
             </option>
@@ -228,7 +215,7 @@ export const ImputationStrategy: React.FC<ImputationStrategyProps> = ({
       </S.FormGroup>
 
       <DataAnalysis />
-  
+
       <S.SettingHeader>
         <S.SettingIcon>🎯</S.SettingIcon>
         <S.SettingTitle>보간 전략 설정</S.SettingTitle>
@@ -299,35 +286,21 @@ export const ImputationStrategy: React.FC<ImputationStrategyProps> = ({
         <S.FormLabel>고급 옵션</S.FormLabel>
         <S.CheckboxContainer>
           <S.CheckboxLabel>
-            <input
-              type="checkbox"
-              checked={crossValidation}
-              onChange={(e) => setCrossValidation(e.target.checked)}
-            />
+            <input type="checkbox" checked={crossValidation} onChange={(e) => setCrossValidation(e.target.checked)} />
             <span>교차 검증 수행</span>
           </S.CheckboxLabel>
           <S.CheckboxLabel>
-            <input
-              type="checkbox"
-              checked={outlierHandling}
-              onChange={(e) => setOutlierHandling(e.target.checked)}
-            />
+            <input type="checkbox" checked={outlierHandling} onChange={(e) => setOutlierHandling(e.target.checked)} />
             <span>이상치 자동 처리</span>
           </S.CheckboxLabel>
           <S.CheckboxLabel>
-            <input
-              type="checkbox"
-              checked={timeSeriesPattern}
-              onChange={(e) => setTimeSeriesPattern(e.target.checked)}
-            />
+            <input type="checkbox" checked={timeSeriesPattern} onChange={(e) => setTimeSeriesPattern(e.target.checked)} />
             <span>시계열 패턴 고려</span>
           </S.CheckboxLabel>
         </S.CheckboxContainer>
       </S.FormGroup>
 
-      {error && (
-        <div style={{ color: "red", marginTop: "1rem", marginBottom: "1rem" }}>에러: {error}</div>
-      )}
+      {error && <div style={{ color: "red", marginTop: "1rem", marginBottom: "1rem" }}>에러: {error}</div>}
 
       <S.FormGroup>
         <button
@@ -336,13 +309,13 @@ export const ImputationStrategy: React.FC<ImputationStrategyProps> = ({
           style={{
             width: "100%",
             padding: "12px 24px",
-            background: (loading || !selectedProjectId) ? "#9ca3af" : "linear-gradient(135deg, #667eea, #764ba2)",
+            background: loading || !selectedProjectId ? "#9ca3af" : "linear-gradient(135deg, #667eea, #764ba2)",
             color: "white",
             border: "none",
             borderRadius: "8px",
             fontSize: "14px",
             fontWeight: 600,
-            cursor: (loading || !selectedProjectId) ? "not-allowed" : "pointer",
+            cursor: loading || !selectedProjectId ? "not-allowed" : "pointer",
             transition: "all 0.2s",
           }}
         >

@@ -181,9 +181,40 @@ class ApiClient {
     });
   }
 
-  async getVerificationRules(projectId?: number) {
+  async getVerificationRules(projectId?: number, isCustom?: boolean) {
+    const params: Record<string, string | number | boolean> = {};
+    if (projectId) {
+      params.project_id = projectId;
+    }
+    if (isCustom !== undefined) {
+      params.is_custom = isCustom;
+    }
     return this.request("/verification/rules", {
-      params: projectId ? { project_id: projectId } : undefined,
+      params: Object.keys(params).length > 0 ? params : undefined,
+    });
+  }
+
+  async getCustomVerificationRules() {
+    return this.request("/verification/rules/custom");
+  }
+
+  async createVerificationRule(data: Record<string, unknown>) {
+    return this.request("/verification/rules", {
+      method: "POST",
+      data,
+    });
+  }
+
+  async updateVerificationRule(ruleId: number, data: Record<string, unknown>) {
+    return this.request(`/verification/rules/${ruleId}`, {
+      method: "PUT",
+      data,
+    });
+  }
+
+  async deleteVerificationRule(ruleId: number) {
+    return this.request(`/verification/rules/${ruleId}`, {
+      method: "DELETE",
     });
   }
 
