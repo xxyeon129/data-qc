@@ -4,7 +4,7 @@
 
 import * as S from "./dashboardPage.styles";
 import { StatCard } from "./components/StatCard";
-import { QualityTrend } from "./components/QualityTrend";
+// import { QualityTrend } from "./components/QualityTrend";
 import { ProjectPreviewCard } from "./components/ProjectPreviewCard";
 import { PreviewGrid } from "./components/projectPreviewCard.styles";
 import { apiClient } from "@/shared/api";
@@ -64,7 +64,7 @@ export const DashboardPage = () => {
         )}
       </S.Card>
 
-      <S.Card>
+      {/* <S.Card>
         <S.CardHeader>
           <S.SectionTitle>품질 트렌드</S.SectionTitle>
           <S.Select>
@@ -74,7 +74,7 @@ export const DashboardPage = () => {
           </S.Select>
         </S.CardHeader>
         <QualityTrend />
-      </S.Card>
+      </S.Card> */}
     </S.Section>
   );
 };

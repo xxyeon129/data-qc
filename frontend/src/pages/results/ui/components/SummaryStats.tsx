@@ -43,7 +43,7 @@ export const SummaryStats = ({ selectedProjectId }: SummaryStatsProps) => {
       const maxAttempts = 30;
 
       while (attempts < maxAttempts) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise((resolve) => setTimeout(resolve, 1000));
         const status: any = await apiClient.getValidationStatus(jobId);
 
         if (status.status === "completed") {
@@ -66,9 +66,7 @@ export const SummaryStats = ({ selectedProjectId }: SummaryStatsProps) => {
   if (loading) {
     return (
       <S.StatsGrid>
-        <div style={{ padding: "2rem", textAlign: "center", color: "#666" }}>
-          검증 결과를 불러오는 중...
-        </div>
+        <div style={{ padding: "2rem", textAlign: "center", color: "#666" }}>검증 결과를 불러오는 중...</div>
       </S.StatsGrid>
     );
   }
@@ -76,12 +74,12 @@ export const SummaryStats = ({ selectedProjectId }: SummaryStatsProps) => {
   if (!validationResult) {
     return (
       <S.StatsGrid>
-        <div style={{ padding: "2rem", textAlign: "center", color: "#666" }}>
-          프로젝트를 선택하여 검증 결과를 확인하세요.
-        </div>
+        <div style={{ padding: "2rem", textAlign: "center", color: "#666" }}>프로젝트를 선택하여 검증 결과를 확인하세요.</div>
       </S.StatsGrid>
     );
   }
+
+  console.log(validationResult);
 
   // Calculate statistics from validation result
   const totalSamples = validationResult.files.reduce((acc, file) => {
@@ -90,31 +88,31 @@ export const SummaryStats = ({ selectedProjectId }: SummaryStatsProps) => {
 
   const totalNanCount = validationResult.files.reduce((acc, file) => acc + file.nan_count, 0);
   const totalValues = validationResult.files.reduce((acc, file) => acc + file.total_values, 0);
-  const overallNanPercentage = totalValues > 0 ? (totalNanCount / totalValues * 100).toFixed(2) : "0.00";
+  const overallNanPercentage = totalValues > 0 ? ((totalNanCount / totalValues) * 100).toFixed(2) : "0.00";
 
   const qualityScore = validationResult.all_passed ? 100 - parseFloat(overallNanPercentage) : 0;
-  const issueCount = validationResult.files.filter(f => f.nan_percentage > 10).length;
+  const issueCount = validationResult.files.filter((f) => f.nan_percentage > 10).length;
 
   const stats = [
     {
       value: `${qualityScore.toFixed(1)}%`,
       label: "전체 품질 점수",
-      color: qualityScore >= 90 ? "#10b981" : qualityScore >= 70 ? "#f59e0b" : "#ef4444"
+      color: qualityScore >= 90 ? "#10b981" : qualityScore >= 70 ? "#f59e0b" : "#ef4444",
     },
     {
       value: totalSamples.toString(),
       label: "검증된 샘플",
-      color: "#3b82f6"
+      color: "#3b82f6",
     },
     {
       value: issueCount.toString(),
       label: "보간 권장 파일",
-      color: issueCount === 0 ? "#10b981" : "#f59e0b"
+      color: issueCount === 0 ? "#10b981" : "#f59e0b",
     },
     {
       value: `${overallNanPercentage}%`,
       label: "전체 결측률",
-      color: parseFloat(overallNanPercentage) < 10 ? "#10b981" : parseFloat(overallNanPercentage) < 30 ? "#f59e0b" : "#ef4444"
+      color: parseFloat(overallNanPercentage) < 10 ? "#10b981" : parseFloat(overallNanPercentage) < 30 ? "#f59e0b" : "#ef4444",
     },
   ];
 
@@ -129,6 +127,3 @@ export const SummaryStats = ({ selectedProjectId }: SummaryStatsProps) => {
     </S.StatsGrid>
   );
 };
-
-
-

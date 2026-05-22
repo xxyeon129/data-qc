@@ -12,7 +12,7 @@ import io
 import logging
 import math
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -725,7 +725,7 @@ async def download_validation_report(project_id: int, db: Session = Depends(get_
     C_PASS    = colors.HexColor("#27AE60")
     C_WARN    = colors.HexColor("#E67E22")
     C_FAIL    = colors.HexColor("#E74C3C")
-    C_HEADER  = colors.HexColor("#1A252F")
+    C_HEADER  = colors.HexColor("#4A4A4A")
     C_ALT     = colors.HexColor("#F2F3F4")
     C_SECTION = colors.HexColor("#D6EAF8")
 
@@ -750,15 +750,21 @@ async def download_validation_report(project_id: int, db: Session = Depends(get_
     rules_applied = len({m.get("metricId") for m in executed if m.get("metricId")})
     total_files   = results.get("total_files", len(files))
 
-    generated_at = (
-        job.completed_at.strftime("%Y-%m-%d %H:%M:%S")
-        if job.completed_at
-        else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    )
+    KST = timezone(timedelta(hours=9))
+    UTC = timezone.utc
+
+    def _to_kst(dt: datetime) -> datetime:
+        # naive datetime은 UTC로 간주하고 KST로 변환
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt.astimezone(KST)
+
+    now_kst = datetime.now(KST)
+    generated_at = now_kst.strftime("%Y-%m-%d %H:%M:%S KST")
     report_id = (
-        f"RPT-{job.completed_at.strftime('%Y%m%d%H%M%S')}"
+        f"RPT-{_to_kst(job.completed_at).strftime('%Y%m%d%H%M%S')}"
         if job.completed_at
-        else "RPT-UNKNOWN"
+        else f"RPT-{now_kst.strftime('%Y%m%d%H%M%S')}"
     )
 
     def quality_grade(rate: float) -> str:
@@ -836,6 +842,7 @@ async def download_validation_report(project_id: int, db: Session = Depends(get_
     h3_style     = _ps("rpt_h3",       "Heading3", fontSize=10, leading=13, textColor=C_BLUE,  spaceBefore=5)
     body_style   = _ps("rpt_body",                 fontSize=9,  leading=13)
     cell_style   = _ps("rpt_cell",                 fontSize=8,  leading=11)
+    hdr_style    = _ps("rpt_hdr",                  fontSize=8,  leading=11, textColor=colors.white)
     small_style  = _ps("rpt_small",                fontSize=7,  leading=10)
     footer_style = _ps("rpt_footer",               fontSize=7.5,leading=10, textColor=colors.HexColor("#7F8C8D"))
     note_style   = _ps("rpt_note",                 fontSize=7.5,leading=11, textColor=colors.HexColor("#5D6D7E"))
@@ -866,6 +873,9 @@ async def download_validation_report(project_id: int, db: Session = Depends(get_
 
     def p(text: str, style: ParagraphStyle = None) -> Paragraph:
         return Paragraph(str(text), style or cell_style)
+
+    def ph(text: str) -> Paragraph:
+        return Paragraph(str(text), hdr_style)
 
     # ══════════════════════════════════════════════════════════════
     # Story 구성
@@ -914,9 +924,9 @@ async def download_validation_report(project_id: int, db: Session = Depends(get_
 
     ow = [140, 72, 52, 58, 68, PAGE_W - 140 - 72 - 52 - 58 - 68]
     ov_hdr = [
-        p("<b>File</b>"),        p("<b>Data Type</b>"),
-        p("<b>Samples</b>"),     p("<b>Features</b>"),
-        p("<b>Total Cells</b>"), p("<b>Missing Rate</b>"),
+        ph("<b>File</b>"),        ph("<b>Data Type</b>"),
+        ph("<b>Samples</b>"),     ph("<b>Features</b>"),
+        ph("<b>Total Cells</b>"), ph("<b>Missing Rate</b>"),
     ]
     ov_rows = [ov_hdr]
     tot_samples = 0
@@ -980,10 +990,10 @@ async def download_validation_report(project_id: int, db: Session = Depends(get_
     DIMENSIONS = ["Completeness", "Plausibility", "Conformance"]
     dw = [110, 58, 52, 52, 52, 68, PAGE_W - 110 - 58 - 52 - 52 - 52 - 68]
     dim_hdr = [
-        p("<b>Dimension</b>"),  p("<b>Checks</b>"),
-        p("<b>Pass</b>"),       p("<b>Warn</b>"),
-        p("<b>Fail</b>"),       p("<b>Pass Rate</b>"),
-        p("<b>Assessment</b>"),
+        ph("<b>Dimension</b>"),  ph("<b>Checks</b>"),
+        ph("<b>Pass</b>"),       ph("<b>Warn</b>"),
+        ph("<b>Fail</b>"),       ph("<b>Pass Rate</b>"),
+        ph("<b>Assessment</b>"),
     ]
     dim_rows = [dim_hdr]
     for dim in DIMENSIONS:
@@ -1012,9 +1022,9 @@ async def download_validation_report(project_id: int, db: Session = Depends(get_
 
     det_w = [130, 100, 50, 68, PAGE_W - 130 - 100 - 50 - 68]
     det_hdr = [
-        p("<b>Rule</b>"),     p("<b>File</b>"),
-        p("<b>Status</b>"),   p("<b>Severity</b>"),
-        p("<b>Details</b>"),
+        ph("<b>Rule</b>"),     ph("<b>File</b>"),
+        ph("<b>Status</b>"),   ph("<b>Severity</b>"),
+        ph("<b>Details</b>"),
     ]
 
     for idx, dim in enumerate(DIMENSIONS, 1):

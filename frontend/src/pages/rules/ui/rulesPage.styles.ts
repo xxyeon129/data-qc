@@ -569,18 +569,16 @@ export const RuleTag = styled.span<{ $tag: string }>`
   white-space: nowrap;
   ${({ $tag }) => {
     switch ($tag) {
-      case "RNA":
-        return "background: #fef3c7; color: #92400e;";
-      case "DNA":
-        return "background: #dbeafe; color: #1e40af;";
-      case "PROTEIN":
-        return "background: #ede9fe; color: #5b21b6;";
-      case "METHYL":
-        return "background: #d1fae5; color: #065f46;";
-      case "MULTI-MODAL":
-        return "background: #e0e7ff; color: #3730a3;";
-      case "CLINICAL":
-        return "background: #cffafe; color: #155e75;";
+      case "FATAL":
+        return "background: #fee2e2; color: #dc2626; border: 1px solid #fca5a5;";
+      case "ERROR":
+        return "background: #fff7ed; color: #ea580c; border: 1px solid #fdba74;";
+      case "WARNING":
+        return "background: #fffbeb; color: #d97706; border: 1px solid #fcd34d;";
+      case "CHARACTERIZATION":
+        return "background: #f9fafb; color: #6b7280; border: 1px solid #d1d5db;";
+      case "CONVENTION":
+        return "background: #eff6ff; color: #2563eb; border: 1px solid #93c5fd;";
       default:
         return "background: #f3f4f6; color: #374151;";
     }

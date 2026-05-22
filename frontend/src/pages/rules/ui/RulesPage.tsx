@@ -7,7 +7,7 @@ import { apiClient } from "../../../shared/api/client";
 import * as S from "./rulesPage.styles";
 
 type RuleLevel = "Basic" | "Advanced";
-type RuleDimension = "RNA" | "DNA" | "PROTEIN" | "METHYL" | "MULTI-MODAL" | "CLINICAL";
+type RuleDimension = "FATAL" | "WARNING" | "ERROR" | "CHARACTERIZATION" | "CONVENTION";
 
 interface Rule {
   id: string;
@@ -31,35 +31,35 @@ const RULE_CATEGORIES: RuleCategory[] = [
       {
         id: "file-header-existence",
         name: "File Header Existence",
-        tags: ["RNA"],
+        tags: ["FATAL"],
         level: "Basic",
         description: "Verifies that the file contains a header row with at least the minimum number of columns.",
       },
       {
         id: "required-sample-id-columns",
         name: "Required Sample ID Column",
-        tags: ["PROTEIN"],
+        tags: ["FATAL"],
         level: "Basic",
         description: "Checks that the first column (Sample ID) exists without NULL values. Sample identifiers are required for cross-validation.",
       },
       {
         id: "column-level-missing-rate",
         name: "Column-level Missing Rate",
-        tags: ["RNA", "DNA", "PROTEIN"],
+        tags: ["WARNING"],
         level: "Basic",
         description: "Measures the proportion of missing values (empty, NA, null, NaN) per column.",
       },
       {
         id: "row-sample-completeness",
         name: "Row (Sample) Completeness",
-        tags: ["RNA"],
+        tags: ["WARNING"],
         level: "Basic",
         description: "Checks that the proportion of valid values per row (sample) meets the threshold.",
       },
       {
         id: "overall-data-missing-rate",
         name: "Overall Data Missing Rate",
-        tags: ["RNA", "DNA", "PROTEIN", "METHYL"],
+        tags: ["WARNING"],
         level: "Basic",
         description:
           "Measures the overall missing value proportion across the entire dataset. Recommended thresholds: DNA 99%. RNA 80%, Protein 75%.",
@@ -67,14 +67,14 @@ const RULE_CATEGORIES: RuleCategory[] = [
       {
         id: "cross-dataset-sample-matching-rate",
         name: "Cross-Dataset Sample Matching Rate",
-        tags: ["MULTI-MODAL"],
+        tags: ["WARNING"],
         level: "Advanced",
         description: "Measures the proportion of shared sample IDs across multiple datasets.",
       },
       {
         id: "common-sample-count-across-datasets",
         name: "Common Sample Count Across Datasets",
-        tags: ["MULTI-MODAL"],
+        tags: ["ERROR"],
         level: "Advanced",
         description: "Counts the number of samples present in all registered datasets.",
       },
@@ -87,70 +87,70 @@ const RULE_CATEGORIES: RuleCategory[] = [
       {
         id: "expression-value-lower-bound",
         name: "Expression Value Lower Bound",
-        tags: ["RNA", "DNA"],
+        tags: ["CHARACTERIZATION"],
         level: "Basic",
         description: "Checks the proportion ot numeric expression values below the configured lower bound.",
       },
       {
         id: "expression-value-upper-bound",
         name: "Expression Value Upper Bound",
-        tags: ["RNA", "DNA"],
+        tags: ["CHARACTERIZATION"],
         level: "Basic",
         description: "Checks the proportion of numeric expression values excedding the configured upper bound.",
       },
       {
         id: "iqr-based-outlier-detection",
         name: "IQR-Based Outlier Detection",
-        tags: ["RNA", "DNA"],
+        tags: ["WARNING"],
         level: "Basic",
         description: "Detects outliers using the Interquartile Range (IQR × 1.5) method.",
       },
       {
         id: "zero-variance-column-detection",
         name: "Zero-Variance Column Detection",
-        tags: ["RNA", "DNA"],
+        tags: ["WARNING"],
         level: "Basic",
         description: "Detects columns with zero variance (constant values only), indicating uninformative features.",
       },
       {
         id: "sex-gender-value-set-check",
         name: "Sex/Gender Value Set Check",
-        tags: ["CLINICAL"],
+        tags: ["ERROR"],
         level: "Basic",
         description: "Validates that sex/gender column values belong to the allowed value set.",
       },
       {
         id: "age-value-range-check",
         name: "Age Value Range Check",
-        tags: ["CLINICAL"],
+        tags: ["ERROR"],
         level: "Basic",
         description: "Validates that age column values fall within a plausible range (0-120).",
       },
       {
         id: "vital-status-value-set-check",
         name: "Vital Status Value Set Check",
-        tags: ["CLINICAL"],
+        tags: ["CHARACTERIZATION"],
         level: "Basic",
         description: "Validates vital status values (Alive/Dead/Not Reported/0/1 etc.).",
       },
       {
         id: "survival-time-plausibility",
         name: "Survival Time Plausibility",
-        tags: ["CLINICAL"],
+        tags: ["WARNING"],
         level: "Basic",
         description: "Cnecks survival time related columns are non-negative and in plausible range.",
       },
       {
         id: "temporal-plausibility-check",
         name: "Temporal Plausibility Check",
-        tags: ["CLINICAL", "MULTI-MODAL"],
+        tags: ["CHARACTERIZATION"],
         level: "Basic",
         description: "Checks temporal consistency across related fields (for example, start <= end and clinically plausible day offsets)",
       },
       {
         id: "exploratory-batch-separation",
         name: "Exploratory Batch Separation (PC1/PC2)",
-        tags: ["RNA", "DNA"],
+        tags: ["CHARACTERIZATION"],
         level: "Advanced",
         description: "If batch labels are available, evaluates exploratory batch separation on PC1/PC2.",
       },
@@ -163,49 +163,49 @@ const RULE_CATEGORIES: RuleCategory[] = [
       {
         id: "file-format-consistency",
         name: "File Format Consistency",
-        tags: ["PROTEIN"],
+        tags: ["ERROR"],
         level: "Basic",
         description: "Validates that all rows have the same number of columns as the header.",
       },
       {
         id: "primary-key-uniqueness",
         name: "Primary Key Uniqueness",
-        tags: ["RNA"],
+        tags: ["ERROR"],
         level: "Basic",
         description: "Validates that all values in the first column (sample ID) are unique.",
       },
       {
         id: "expression-data-type-check",
         name: "Expression Data Type Check",
-        tags: ["RNA", "DNA"],
+        tags: ["ERROR"],
         level: "Basic",
         description: "Validates that omics expression values (excluding the first column) are all numeric.",
       },
       {
         id: "sample-id-format-pattern",
         name: "Sample ID Format Pattern",
-        tags: ["CLINICAL"],
+        tags: ["CONVENTION"],
         level: "Basic",
         description: "Validates that first column values match the specified regex pattern.",
       },
       {
         id: "negative-value-check-raw-count",
         name: "Negative Value Check (Raw Count)",
-        tags: ["RNA", "DNA"],
+        tags: ["WARNING"],
         level: "Basic",
         description: "Detects negative values in raw count data, which may indicate data processing errors.",
       },
       {
         id: "batch-label-availability",
         name: "Batch Label Availability",
-        tags: ["CLINICAL"],
+        tags: ["CONVENTION"],
         level: "Basic",
         description: "Checks whether batch labels exist in metadata columns (batch/plate/run/center/tss).",
       },
       {
         id: "cross-dataset-id-format-consistency",
         name: "Cross-Dataset ID Format Consistency",
-        tags: ["MULTI-MODAL"],
+        tags: ["WARNING"],
         level: "Advanced",
         description: "Validates that sample ID formats are consistent across multiple datasets.",
       },
@@ -353,10 +353,7 @@ const buildParametersFromForm = (form: NewRuleForm): Record<string, unknown> => 
 };
 
 /* parameters 객체 → 사람이 읽을 수 있는 설명 문자열 */
-const buildDescriptionFromParameters = (
-  validationType: string,
-  parameters: Record<string, unknown>
-): string => {
+const buildDescriptionFromParameters = (validationType: string, parameters: Record<string, unknown>): string => {
   switch (validationType) {
     case "threshold": {
       const metric = parameters.metric ?? "value";
@@ -368,9 +365,7 @@ const buildDescriptionFromParameters = (
       return `Range: ${parameters.min ?? "?"} ~ ${parameters.max ?? "?"}`;
     case "value_set": {
       const col = parameters.target_column ?? "?";
-      const values = Array.isArray(parameters.allowed_values)
-        ? (parameters.allowed_values as string[]).join(", ")
-        : "";
+      const values = Array.isArray(parameters.allowed_values) ? (parameters.allowed_values as string[]).join(", ") : "";
       return `Column "${col}" must be in [${values}]`;
     }
     case "pattern":
@@ -400,9 +395,7 @@ export const RulesPage = () => {
   const normalizeRuleResponse = (raw: Record<string, unknown>): CustomRuleItem => {
     const parameters = (raw.parameters as Record<string, unknown>) ?? {};
     const validationType = (raw.validationType as string) ?? "";
-    const description =
-      (raw.description as string) ||
-      buildDescriptionFromParameters(validationType, parameters);
+    const description = (raw.description as string) || buildDescriptionFromParameters(validationType, parameters);
     return {
       id: Number(raw.id ?? 0),
       name: (raw.name as string) ?? "Custom Rule",
@@ -451,10 +444,7 @@ export const RulesPage = () => {
     if (isSubmitting) return;
 
     const parameters = buildParametersFromForm(newRuleForm);
-    const description = buildDescriptionFromParameters(
-      VALIDATION_TYPE_TO_BACKEND[newRuleForm.validationType],
-      parameters
-    );
+    const description = buildDescriptionFromParameters(VALIDATION_TYPE_TO_BACKEND[newRuleForm.validationType], parameters);
 
     const payload = {
       name: trimmedName,
@@ -592,23 +582,13 @@ export const RulesPage = () => {
                     <S.CustomRuleBody>
                       <S.CustomRuleHeader>
                         <S.CustomRuleName>{rule.name}</S.CustomRuleName>
-                        <S.CustomRuleDimensionBadge $dimension={rule.dimension}>
-                          {rule.dimension}
-                        </S.CustomRuleDimensionBadge>
-                        <S.CustomRuleSeverityBadge $severity={rule.severity}>
-                          {rule.severity}
-                        </S.CustomRuleSeverityBadge>
+                        <S.CustomRuleDimensionBadge $dimension={rule.dimension}>{rule.dimension}</S.CustomRuleDimensionBadge>
+                        <S.CustomRuleSeverityBadge $severity={rule.severity}>{rule.severity}</S.CustomRuleSeverityBadge>
                         <S.CustomRuleTypeBadge>{rule.validationType}</S.CustomRuleTypeBadge>
                       </S.CustomRuleHeader>
-                      {rule.description && (
-                        <S.CustomRuleDescription>{rule.description}</S.CustomRuleDescription>
-                      )}
+                      {rule.description && <S.CustomRuleDescription>{rule.description}</S.CustomRuleDescription>}
                     </S.CustomRuleBody>
-                    <S.CustomRuleDeleteButton
-                      onClick={() => handleDeleteCustomRule(rule.id)}
-                      title="Delete rule"
-                      aria-label="Delete rule"
-                    >
+                    <S.CustomRuleDeleteButton onClick={() => handleDeleteCustomRule(rule.id)} title="Delete rule" aria-label="Delete rule">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                         <path d="M3 6h18" />
                         <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
@@ -735,10 +715,7 @@ export const RulesPage = () => {
               <S.ModalRow $cols={2}>
                 <S.ModalField>
                   <S.ModalLabel>Dimension</S.ModalLabel>
-                  <S.ModalSelect
-                    value={newRuleForm.dimension}
-                    onChange={(e) => updateNewRuleForm("dimension", e.target.value as DimensionOption)}
-                  >
+                  <S.ModalSelect value={newRuleForm.dimension} onChange={(e) => updateNewRuleForm("dimension", e.target.value as DimensionOption)}>
                     {DIMENSION_OPTIONS.map((d) => (
                       <option key={d} value={d}>
                         {d}
@@ -799,11 +776,7 @@ export const RulesPage = () => {
                   </S.ModalField>
                   <S.ModalField>
                     <S.ModalLabel>Threshold</S.ModalLabel>
-                    <S.ModalInput
-                      type="number"
-                      value={newRuleForm.threshold}
-                      onChange={(e) => updateNewRuleForm("threshold", e.target.value)}
-                    />
+                    <S.ModalInput type="number" value={newRuleForm.threshold} onChange={(e) => updateNewRuleForm("threshold", e.target.value)} />
                   </S.ModalField>
                 </S.ModalRow>
               )}
